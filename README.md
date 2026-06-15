@@ -117,4 +117,3 @@ The blue LED on the NodeMCU blinks briefly on each valid packet.
 ## References
 
 - [rtl_433](https://github.com/merbanan/rtl_433) — Geevon TX19 decoder (issue #3438)
-- [rc-switch](https://github.com/sui77/rc-switch) — generic 433 MHz library (not used here; protocol is custom)
