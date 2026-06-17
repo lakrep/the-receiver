@@ -101,18 +101,50 @@ Therefore `channel = (d[1] >> 4) - 7`.
 
 ## Usage
 
+### Flashing
+
 1. Open `the-receiver.ino` in Arduino IDE
 2. Select board: **NodeMCU 1.0 (ESP-12E Module)**
-3. Upload to the controller
-4. Open Serial Monitor at **115200 baud**
-5. Output appears as:
+3. Install libraries: **PubSubClient** by Nick O'Leary
+4. Upload to the controller
+
+### First Boot — Configuration
+
+On first boot (or after EEPROM reset) the ESP starts an access point:
+
+1. Connect your phone/PC to WiFi SSID **the-receiver**
+2. Open http://192.168.4.1
+3. Enter your WiFi credentials and MQTT broker details
+4. Click "Save & Reboot"
+
+The device will then connect to your WiFi network and the MQTT broker.
+
+### Home Assistant
+
+If MQTT Discovery is enabled in Home Assistant, two sensors
+(temperature and humidity) appear automatically under device **the-receiver**.
+
+**State topic:** `the-receiver/state` (JSON: `{"temperature":24.4,"humidity":57}`)  
+**Availability topic:** `the-receiver/availability` (`online` / `offline`, retained)
+
+### Re-configuration
+
+- Press reset 3 times within 5 seconds → boots into AP config mode
+- Or delete the EEPROM via serial (`E` command in older builds)
+
+### Serial Monitor
+
+Output at 115200 baud (USB-only; silent when no serial host):
 
 ```
-[12:34:56.789]  CH1       24.4C  57%
-[12:35:46.805]  CH2       22.1C  63%
+=== the-receiver ===
+Config found in EEPROM
+Connecting WiFi to MyNetwork
+WiFi OK: 192.168.1.42
+MQTT OK
 ```
 
-The blue LED on the NodeMCU blinks briefly on each valid packet.
+The built-in blue LED blinks briefly on each valid RF packet.
 
 ## References
 
