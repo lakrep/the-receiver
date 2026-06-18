@@ -28,10 +28,10 @@ tolerance (resulting in ~3.44V at idle, safely under the 3.6V absolute maximum).
 
 ```
 RX470 D0 ──┬── 10 kΩ ──┬── D2 (GPIO4)
-            │           │
-            │          22 kΩ
-            │           │
-           GND         GND
+           │           │
+           │          22 kΩ
+           │           │
+          GND         GND
 ```
 
 ### Antenna
