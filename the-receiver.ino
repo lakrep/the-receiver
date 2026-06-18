@@ -1,9 +1,9 @@
 /*
-  the-receiver — Geevon TX19 decoder with WiFi + MQTT + Home Assistant
+  the-receiver — Geevon TX19 433MHz decoder with WiFi + MQTT + Home Assistant
   Board: NodeMCU D1 Mini (ESP-12F)
 
-  RF protocol: 40-bit packet, OOK PWM, short space ~970us = 0, long ~1930us = 1
-  Wiring: RX470C-V01 D0 → D2 (GPIO4) via 10k+22k divider, VCC→5V
+  // Обновлено: 40-битный (5 байт). Температура: 12-bit (d[2]<<4 | d[3]>>4) * 0.1. Влажность: d[4] или комбинированная.
+  // Канал: (d[1]>>4) - 7 (8=CH1, 9=CH2, A=CH3). Батарея: d[1] bit 3.
 
   First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT
   Subsequent boots: read from EEPROM, connect WiFi → MQTT → HA Discovery
@@ -29,10 +29,12 @@
 #define SPACE_MIN     700
 #define SPACE_SHORT_MAX 1300
 #define SPACE_LONG_MIN 1500
-#define SPACE_MAX     2500
+#define SPACE_MAX     5000
 #define IDLE_TIMEOUT  5000
 #define MAX_BITS      100
-#define VALID_MIN     60
+#define VALID_MIN     30
+#define PACKET_BITS   40
+#define PACKET_BYTES  5
 
 // ============================================================
 // EEPROM configuration
@@ -59,6 +61,72 @@ struct Storage {
 #define CONFIG_TIMEOUT    300000   // 5 min in AP mode before reboot
 
 #define SERIAL_PRINT(...)  do { if (!silent) { Serial.__VA_ARGS__; } } while(0)
+
+// LFSR-8 reverse (LSB-first)
+static uint8_t lfsr8r(uint8_t *data, uint8_t len, uint8_t gen, uint8_t key) {
+  uint8_t lfsr = key;
+  for (uint8_t i = 0; i < len; i++) {
+    uint8_t byte = data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      if ((byte ^ lfsr) & 1) lfsr = (lfsr >> 1) ^ gen;
+      else lfsr >>= 1;
+      byte >>= 1;
+    }
+  }
+  return lfsr;
+}
+// LFSR-8 normal (MSB-first)
+static uint8_t lfsr8(uint8_t *data, uint8_t len, uint8_t gen, uint8_t key) {
+  uint8_t lfsr = key;
+  for (uint8_t i = 0; i < len; i++) {
+    uint8_t byte = data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      if ((byte ^ lfsr) & 0x80) lfsr = (lfsr << 1) ^ gen;
+      else lfsr <<= 1;
+      byte <<= 1;
+    }
+  }
+  return lfsr;
+}
+// CRC-8 (MSB-first, reflected=0)
+static uint8_t crc8(uint8_t *data, uint8_t len, uint8_t poly, uint8_t init) {
+  uint8_t crc = init;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      if (crc & 0x80) crc = (crc << 1) ^ poly;
+      else crc <<= 1;
+    }
+  }
+  return crc;
+}
+// Try multiple CRC/LFSR combos to find one matching cksum byte
+// Returns 1-based method index (0 = none)
+static int matchCksum(uint8_t *d) {
+  if (lfsr8r(d, 8, 0x98, 0x25) == d[8]) return 1;
+  if (lfsr8(d, 8, 0x98, 0x25) == d[8]) return 2;
+  if (lfsr8r(d+1, 7, 0x98, 0x25) == d[8]) return 3;
+  if (lfsr8(d+1, 7, 0x98, 0x25) == d[8]) return 4;
+  if (lfsr8r(d, 8, 0x31, 0x7b) == d[8]) return 5;
+  if (lfsr8(d, 8, 0x31, 0x7b) == d[8]) return 6;
+  if (crc8(d, 8, 0x07, 0x00) == d[8]) return 7;
+  if (crc8(d+1, 7, 0x07, 0x00) == d[8]) return 8;
+  if (crc8(d, 8, 0x31, 0x00) == d[8]) return 9;
+  if (crc8(d+1, 7, 0x31, 0x00) == d[8]) return 10;
+  uint8_t sum = 0;
+  for (int i = 0; i < 8; i++) sum += d[i];
+  if (sum == d[8]) return 11;
+  sum = 0;
+  for (int i = 1; i < 8; i++) sum += d[i];
+  if (sum == d[8]) return 12;
+  uint8_t xor8 = 0;
+  for (int i = 0; i < 8; i++) xor8 ^= d[i];
+  if (xor8 == d[8]) return 13;
+  xor8 = 0;
+  for (int i = 1; i < 8; i++) xor8 ^= d[i];
+  if (xor8 == d[8]) return 14;
+  return 0;
+}
 
 // ============================================================
 // Global state
@@ -125,6 +193,7 @@ void saveConfig() {
 // ============================================================
 void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
+  printTimestamp();
   SERIAL_PRINT(print(F("Connecting WiFi to ")));
   SERIAL_PRINT(println(cfg.wifiSSID));
   WiFi.mode(WIFI_STA);
@@ -135,9 +204,11 @@ void connectWiFi() {
     tries++;
   }
   if (WiFi.status() == WL_CONNECTED) {
+    printTimestamp();
     SERIAL_PRINT(print(F("WiFi OK: ")));
     SERIAL_PRINT(println(WiFi.localIP()));
   } else {
+    printTimestamp();
     SERIAL_PRINT(println(F("WiFi FAILED")));
   }
 }
@@ -168,8 +239,10 @@ bool connectMQTT() {
   if (ok) {
     mqtt.publish("the-receiver/availability", "online", true);
     publishDiscovery();
+    printTimestamp();
     SERIAL_PRINT(println(F("MQTT OK")));
   } else {
+    printTimestamp();
     SERIAL_PRINT(print(F("MQTT FAIL: ")));
     SERIAL_PRINT(println(mqtt.state()));
   }
@@ -216,6 +289,7 @@ void publishState() {
   char buf[64];
   snprintf(buf, sizeof(buf), "{\"temperature\":%.1f,\"humidity\":%u}", lastTempC, lastHum);
   mqtt.publish("the-receiver/state", buf, false);
+  printTimestamp();
   SERIAL_PRINT(print(F("MQTT publish: ")));
   SERIAL_PRINT(println(buf));
 }
@@ -309,7 +383,7 @@ void decodeRF() {
   pulseIndex = 0;
   interrupts();
 
-  if (count < 15) return;
+  if (count < 10) return;
 
   uint8_t bits[MAX_BITS];
   int bitCount = 0, valid = 0, invalid = 0;
@@ -317,7 +391,7 @@ void decodeRF() {
     uint16_t m = timings[i];
     uint16_t s = timings[i + 1];
     if (m < MARK_MIN || m > MARK_MAX || s < SPACE_MIN) { invalid++; continue; }
-    if (s >= SPACE_MIN && s <= SPACE_SHORT_MAX) {
+    if (s <= SPACE_SHORT_MAX) {
       if (bitCount < MAX_BITS) bits[bitCount++] = 0;
     } else if (s >= SPACE_LONG_MIN && s <= SPACE_MAX) {
       if (bitCount < MAX_BITS) bits[bitCount++] = 1;
@@ -325,48 +399,90 @@ void decodeRF() {
     valid++;
   }
 
-  if (valid < VALID_MIN || invalid * 5 > valid) return;
+  if (bitCount < PACKET_BITS) return;
 
-  // Scan for correct 40-bit alignment
+  // --- 40-bit scan — pick best CH2 packet ---
   int bestOff = -1;
-  uint8_t bestD[5];
-  for (int off = 0; off + 40 <= bitCount; off++) {
-    uint8_t d[5] = {0};
-    for (int b = 0; b < 40; b++)
-      d[b / 8] = (d[b / 8] << 1) | (bits[off + b] & 1);
-    if ((d[3] >> 4) != 0x0F) continue;
-    if (d[2] == 0xFF) continue;
-    if (((uint16_t)d[0] << 8 | d[1]) == 0xFFFF) continue;
-    uint8_t ch = (d[1] >> 4);
-    if (ch < 8 || ch > 10) continue;
-    if ((d[3] & 0x0F) > 6) continue;
-    bestOff = off;
-    memcpy(bestD, d, 5);
-    break;
+  uint8_t bestD[PACKET_BYTES];
+  float bestTemp = 0;
+  uint8_t bestHum = 0;
+  int bestDelta = 9999;
+
+  for (int off = 0; off + PACKET_BITS <= bitCount; off++) {
+    for (int inv = 0; inv < 2; inv++) {
+      uint8_t d[PACKET_BYTES] = {0};
+      for (int b = 0; b < PACKET_BITS; b++)
+        d[b / 8] = (d[b / 8] << 1) | ((bits[off + b] & 1) ^ inv);
+      if (d[0] == 0xFF && d[1] == 0xFF) continue;
+      uint8_t channel = (d[1] >> 4) - 7;
+      if (channel != 2) continue;
+
+      // try all temp/hum formula combos
+      float temps[] = {
+        d[2] + (d[3] >> 4),                    // t1
+        ((int)d[2] << 4 | (d[3] >> 4)) * 0.1f // t2
+      };
+      uint8_t hums[] = {
+        (uint8_t)(((d[3] & 0x0F) << 4) | (d[4] >> 4)), // h1
+        d[4],                                           // h2 (byte 4)
+      };
+
+      for (int ti = 0; ti < 2; ti++) {
+        for (int hi = 0; hi < 2; hi++) {
+          if (temps[ti] < -30 || temps[ti] > 60) continue;
+          if (hums[hi] > 100) continue;
+          int delta = abs((int)(temps[ti] * 10) - 290);  // prefer 29C
+          if (delta < bestDelta) {
+            bestDelta = delta; bestOff = off;
+            memcpy(bestD, d, PACKET_BYTES);
+            bestTemp = temps[ti]; bestHum = hums[hi];
+          }
+        }
+      }
+    }
   }
   if (bestOff < 0) return;
 
-  float tempC = bestD[2] * 0.1f;
-  if (tempC < 0 || tempC > 30) return;
-  uint8_t hum = ((bestD[3] & 0x0F) << 4) | (bestD[4] >> 4);
-  if (hum < 1 || hum > 100) return;
+  printTimestamp();
+  SERIAL_PRINT(print(F("RF: CH2  ")));
+  SERIAL_PRINT(print(bestTemp, 1));
+  SERIAL_PRINT(print(F("C  ")));
+  SERIAL_PRINT(print(bestHum));
+  SERIAL_PRINT(print(F("%  raw:")));
+  for (int i = 0; i < PACKET_BYTES; i++) { SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
+  SERIAL_PRINT(println());
 
-  // Valid packet received
-  lastTempC = tempC;
-  lastHum = hum;
+  lastTempC = bestTemp;
+  lastHum = bestHum;
   lastPacket = millis();
   hasData = true;
-  SERIAL_PRINT(print(F("RF: CH")));
-  SERIAL_PRINT(print((bestD[1] >> 4) - 7));
-  SERIAL_PRINT(print(F("  ")));
-  SERIAL_PRINT(print(tempC, 1));
-  SERIAL_PRINT(print(F("C  ")));
-  SERIAL_PRINT(print(hum));
-  SERIAL_PRINT(println(F("%")));
 
   // Blink LED
   digitalWrite(LED_PIN, LOW);
   ledOffTime = millis() + 50;
+}
+
+void printTimestamp() {
+  if (silent) return;
+  unsigned long t = millis();
+  unsigned long h = t / 3600000;
+  unsigned long m = (t % 3600000) / 60000;
+  unsigned long s = (t % 60000) / 1000;
+  unsigned long ms = t % 1000;
+  Serial.print(F("["));
+  if (h < 10) Serial.print('0');
+  Serial.print(h);
+  Serial.print(':');
+  if (m < 10) Serial.print('0');
+  Serial.print(m);
+  Serial.print(':');
+  if (s < 10) Serial.print('0');
+  Serial.print(s);
+  Serial.print('.');
+  if (ms < 100) Serial.print('0');
+  if (ms < 10) Serial.print('0');
+  Serial.print(ms);
+  Serial.print(F("] "));
 }
 
 // ============================================================
