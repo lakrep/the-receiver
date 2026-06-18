@@ -41,63 +41,70 @@ RX470C-V01 module.
 
 ## Protocol
 
-Reverse-engineered from live captures. The sensor uses **OOK PWM**
-(On-Off Keying, Pulse Width Modulation) with the following measured timings:
+Reverse-engineered from live captures. The sensor (Geevon TX19 **no LCD**) uses
+**OOK space-encoded** modulation with the following measured timings:
 
-| Symbol       | Duration     | Meaning        |
-|--------------|-------------|----------------|
-| Mark (carrier) | ~550 µs    | Constant pulse width |
-| Short space  | ~970 µs     | Bit 0         |
-| Long space   | ~1930 µs    | Bit 1         |
+| Symbol       | Duration       | Meaning |
+|--------------|---------------|---------|
+| Mark (carrier) | 300–1000 µs  | Fixed pulse width (sync) |
+| Short space  | 700–1300 µs   | Bit 0   |
+| Long space   | 1500–5000 µs  | Bit 1   |
 
-### Packet format (40 bits)
+**Note:** This is NOT the 72-bit TX19-1 (with LCD) protocol. Do not use
+`rtl_433/src/devices/geevon_tx19.c` constants.
+
+### Packet format (40 bits / 5 bytes)
 
 ```
-Byte 0      Byte 1      Byte 2      Byte 3      Byte 4
-[ID high]   [ID low ]   [Temp   ]   [Flags ]   [Humidity]
-                    +chan       x0.1°C    +hum H     +trailer
+Byte 0    Byte 1    Byte 2    Byte 3    Byte 4
+IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 ```
 
-| Field       | Position   | Size | Description                  |
-|-------------|------------|------|------------------------------|
-| ID          | bits 0–15  | 16   | Sensor ID (0x7580, 0x6C90, etc.) |
-| Temperature | bits 16–23 | 8    | °C × 10 (0–25.5 °C)         |
-| Flags       | bits 24–27 | 4    | Always 0xF                   |
-| Humidity H  | bits 28–31 | 4    | High nibble of humidity      |
-| Humidity L  | bits 32–35 | 4    | Low nibble of humidity       |
-| Trailer     | bits 36–39 | 4    | CRC / channel indicator      |
+| Field       | Position     | Size | Description |
+|-------------|-------------|------|-------------|
+| ID          | d[0]–d[1]   | 16   | Sensor ID (0x7D99, 0xDD99, etc.) |
+| Channel     | d[1] >> 4   | 4    | `8→CH1`, `9→CH2`, `A→CH3` |
+| Battery     | d[1] & 0x08 | 1    | 0 = OK                     |
+| Temperature | d[2]..d[3]  | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
+| Humidity    | d[4]         | 8    | Relative humidity %        |
 
-**Channel** is encoded in the upper nibble of byte 1:
-- `0x80` → CH1
-- `0x90` → CH2
-- `0xA0` → CH3
+**Decoding:**
+```c
+channel = (d[1] >> 4) - 7;                       // CH1/CH2/CH3
+tempC   = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;  // 12-bit, NO -500 offset
+hum     = d[4];                                       // byte 4 only
+```
 
-Therefore `channel = (d[1] >> 4) - 7`.
+**Scanner behaviour:**
+- Iterates all bit offsets and both inversions (inv=0, inv=1)
+- Filters for CH2 only
+- Uses 12-bit temperature formula (no alternative)
+- Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
+  on the correct packet across transmissions
 
-**Battery** is bit 3 of byte 1 (`d[1] & 0x08`).
+**Temperature formula confirmed:**
+- Raw 12-bit = `(d[2] << 4) | (d[3] >> 4)` (e.g. `0x118` = 280 → 28.0 °C)
+- NO -500 offset (TX19-1 uses offset, this device does not)
+
+**Humidity confirmed:** `d[4]` only (not split across d[3]/d[4]).
 
 ## Algorithm
 
 1. **GPIO interrupt** captures every pin state change (CHANGE mode) and records
-   the microsecond timestamp. A gap >10 ms resets the pulse buffer, treating
-   the next pulses as a new packet.
+   the microsecond timestamp. A gap >5 ms (`IDLE_TIMEOUT`) resets the pulse
+   buffer, treating the next pulses as a new packet.
 
-2. **Pulse pairing** — the interrupt buffer contains alternating HIGH/LOW
-   durations. Pairs are formed as `(mark, space)` starting from the first pulse
-   after the idle gap. The first pulse (idle time) is discarded.
-
-3. **Symbol decoding** — each pair is classified:
+2. **Bit extraction** — marks (carrier) and spaces are paired:
    - `mark` 300–1000 µs + `space` 700–1300 µs → **bit 0**
-   - `mark` 300–1000 µs + `space` 1500–2500 µs → **bit 1**
-   - Anything else → invalid (noise)
+   - `mark` 300–1000 µs + `space` 1500–5000 µs → **bit 1**
+   - Anything else → invalid
 
-4. **Validation** — if the number of valid pairs ≥ 30 and exceeds invalid
-   pairs, the first 40 bits are packed into 5 bytes and validated:
-   - Nibble 3 upper must be `0xF` (protocol sync marker)
-   - Not all-1s noise (`d[2] != 0xFF`, `id != 0xFFFF`)
+3. **40-bit scan** — every possible offset and inversion is tested. Candidates
+   are validated by channel nibble (must be 8/9/A) and temperature range.
 
-5. **Output** — temperature = `d[2] × 0.1`, humidity = `(d[3] & 0x0F) << 4) | (d[4] >> 4)`,
-   channel = `(d[1] >> 4) - 7`.
+4. **Best-match** — among all CH2 candidates, the one with temperature closest
+   to 29 °C is selected, with bonuses for matching last known sensor ID and
+   bit offset (prevents drift to neighbour sensors on the same channel).
 
 ## Usage
 

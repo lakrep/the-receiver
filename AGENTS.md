@@ -23,14 +23,14 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - **Byte 0:** ID high byte
 - **Byte 1:** Bits 7-4 = channel-7 (8=CH1, 9=CH2, A=CH3), Bits 3-2 = battery(bit3) + flags
 - **Byte 2-3:** Temperature 12-bit — `((d[2]<<4 | d[3]>>4)) * 0.1°C` (NO -500 offset)
-- **Byte 3-4:** Humidity — `((d[3]&0x0F)<<4) | (d[4]>>4)` OR just `d[4]` — scanner tries both
+- **Byte 4:** Humidity %
 
 ### Decoding
 - `channel = (d[1] >> 4) - 7;`
 - `tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;`
-- `hum = ((d[3] & 0x0F) << 4) | (d[4] >> 4);` — fallback: `hum = d[4];`
+- `hum = d[4];`
 - No checksum verified yet.
-- Scanner tries both inversions (inv=0, inv=1) and picks CH2 with temp closest to 29°C.
+- Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
 
 ## RF Protocol (Geevon TX19-1 with LCD — reference only, NOT used)
 - 72-bit (9 byte), bits inverted, LFSR-8 checksum. See `rtl_433/src/devices/geevon_tx19.c`.

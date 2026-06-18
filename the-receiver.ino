@@ -335,12 +335,14 @@ void decodeRF() {
 
   if (bitCount < PACKET_BITS) return;
 
-  // --- 40-bit scan — pick best CH2 packet ---
+  // --- 40-bit scan — pick best CH2 packet matching our sensor ID ---
   int bestOff = -1;
   uint8_t bestD[PACKET_BYTES];
   float bestTemp = 0;
   uint8_t bestHum = 0;
   int bestDelta = 9999;
+  static uint16_t lastGoodId = 0;
+  static int lastGoodOff = -1;
 
   for (int off = 0; off + PACKET_BITS <= bitCount; off++) {
     for (int inv = 0; inv < 2; inv++) {
@@ -350,32 +352,30 @@ void decodeRF() {
       if (d[0] == 0xFF && d[1] == 0xFF) continue;
       uint8_t channel = (d[1] >> 4) - 7;
       if (channel != 2) continue;
+      uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
-      // try all temp/hum formula combos
-      float temps[] = {
-        d[2] + (d[3] >> 4),                    // t1
-        ((int)d[2] << 4 | (d[3] >> 4)) * 0.1f // t2
-      };
-      uint8_t hums[] = {
-        (uint8_t)(((d[3] & 0x0F) << 4) | (d[4] >> 4)), // h1
-        d[4],                                           // h2 (byte 4)
-      };
+      // temp from 12-bit formula only
+      float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
+      if (tempC < -30 || tempC > 60) continue;
 
-      for (int ti = 0; ti < 2; ti++) {
-        for (int hi = 0; hi < 2; hi++) {
-          if (temps[ti] < -30 || temps[ti] > 60) continue;
-          if (hums[hi] > 100) continue;
-          int delta = abs((int)(temps[ti] * 10) - 290);  // prefer 29C
-          if (delta < bestDelta) {
-            bestDelta = delta; bestOff = off;
-            memcpy(bestD, d, PACKET_BYTES);
-            bestTemp = temps[ti]; bestHum = hums[hi];
-          }
-        }
+      // humidity: byte 4 only (per user)
+      uint8_t hum = d[4];
+      if (hum > 100) continue;
+
+      int delta = abs((int)(tempC * 10) - 290);  // prefer ~29C
+      if (lastGoodId && id == lastGoodId) delta -= 30;  // prefer known sensor
+      if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20; // prefer known offset
+
+      if (delta < bestDelta) {
+        bestDelta = delta; bestOff = off;
+        memcpy(bestD, d, PACKET_BYTES);
+        bestTemp = tempC; bestHum = hum;
       }
     }
   }
   if (bestOff < 0) return;
+  lastGoodOff = bestOff;
+  lastGoodId = ((uint16_t)bestD[0] << 8) | bestD[1];
 
   printTimestamp();
   SERIAL_PRINT(print(F("RF: CH2  ")));
