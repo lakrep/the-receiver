@@ -136,8 +136,9 @@ If MQTT Discovery is enabled in Home Assistant, two sensors
 
 ### Re-configuration
 
-- Press reset 3 times within 5 seconds → boots into AP config mode
-- Or delete the EEPROM via serial (`E` command in older builds)
+WiFi fail 10 times in a row → boots into AP config mode automatically.
+To force re-configuration, clear EEPROM (e.g. by erasing flash via `esptool.py
+erase_flash` or uploading an empty sketch).
 
 ### Serial Monitor
 

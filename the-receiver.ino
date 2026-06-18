@@ -2,8 +2,8 @@
   the-receiver — Geevon TX19 433MHz decoder with WiFi + MQTT + Home Assistant
   Board: NodeMCU D1 Mini (ESP-12F)
 
-  // Обновлено: 40-битный (5 байт). Температура: 12-bit (d[2]<<4 | d[3]>>4) * 0.1. Влажность: d[4] или комбинированная.
-  // Канал: (d[1]>>4) - 7 (8=CH1, 9=CH2, A=CH3). Батарея: d[1] bit 3.
+  40-bit (5 byte), temperature 12-bit (d[2]<<4 | d[3]>>4) * 0.1, humidity d[4],
+  channel (d[1]>>4) - 7 (8=CH1, 9=CH2, A=CH3), battery d[1] bit 3.
 
   First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT
   Subsequent boots: read from EEPROM, connect WiFi → MQTT → HA Discovery
@@ -341,6 +341,11 @@ void decodeRF() {
   float bestTemp = 0;
   uint8_t bestHum = 0;
   int bestDelta = 9999;
+  int bestIdOff = -1;
+  uint8_t bestIdD[PACKET_BYTES];
+  float bestIdTemp = 0;
+  uint8_t bestIdHum = 0;
+  int bestIdDelta = 9999;
   static uint16_t lastGoodId = 0;
   static int lastGoodOff = -1;
 
@@ -358,20 +363,37 @@ void decodeRF() {
       float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
       if (tempC < -30 || tempC > 60) continue;
 
-      // humidity: byte 4 only (per user)
+      // humidity: byte 4 only
       uint8_t hum = d[4];
       if (hum > 100) continue;
 
-      int delta = abs((int)(tempC * 10) - 290);  // prefer ~29C
-      if (lastGoodId && id == lastGoodId) delta -= 30;  // prefer known sensor
-      if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20; // prefer known offset
+      int delta = abs((int)(tempC * 10) - 290);
+      if (lastGoodId && id == lastGoodId) delta -= 30;
+      if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20;
 
+      // track best overall
       if (delta < bestDelta) {
         bestDelta = delta; bestOff = off;
         memcpy(bestD, d, PACKET_BYTES);
         bestTemp = tempC; bestHum = hum;
       }
+      // track best matching known ID (fallback)
+      if (lastGoodId && id == lastGoodId && tempC < lastTempC + 5.0f && tempC > lastTempC - 5.0f) {
+        if (delta < bestIdDelta) {
+          bestIdDelta = delta; bestIdOff = off;
+          memcpy(bestIdD, d, PACKET_BYTES);
+          bestIdTemp = tempC; bestIdHum = hum;
+        }
+      }
     }
+  }
+
+  // prefer ID-matched packet within ±5C; fall back to best overall
+  if (bestIdOff >= 0) {
+    bestOff = bestIdOff; memcpy(bestD, bestIdD, PACKET_BYTES);
+    bestTemp = bestIdTemp; bestHum = bestIdHum;
+  } else if (hasData && (bestOff < 0 || bestTemp > lastTempC + 5.0f || bestTemp < lastTempC - 5.0f)) {
+    return; // skip — no consistent packet found
   }
   if (bestOff < 0) return;
   lastGoodOff = bestOff;
