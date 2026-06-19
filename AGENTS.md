@@ -31,6 +31,9 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - `hum = d[4];`
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
+- **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
+  10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
+  preventing random humidity noise.
 
 ## RF Protocol (Geevon TX19-1 with LCD — reference only, NOT used)
 - 72-bit (9 byte), bits inverted, LFSR-8 checksum. See `rtl_433/src/devices/geevon_tx19.c`.

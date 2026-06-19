@@ -81,6 +81,9 @@ hum     = d[4];                                       // byte 4 only
 - Uses 12-bit temperature formula (no alternative)
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
+- **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
+  10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
+  preventing random humidity noise.
 
 **Temperature formula confirmed:**
 - Raw 12-bit = `(d[2] << 4) | (d[3] >> 4)` (e.g. `0x118` = 280 → 28.0 °C)
