@@ -91,6 +91,11 @@ hum     = d[4];                                       // byte 4 only
 
 **Humidity confirmed:** `d[4]` only (not split across d[3]/d[4]).
 
+> **Station display range:** The base station's spec states *"The indoor and outdoor
+> humidity range is 20%–95%"*. Values below 20% are displayed as 20%; values above
+> 95% are displayed as 95%. Our decoder reports the real sensor value from `d[4]`
+> without clipping.
+
 ## Algorithm
 
 1. **GPIO interrupt** captures every pin state change (CHANGE mode) and records

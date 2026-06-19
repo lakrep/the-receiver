@@ -370,6 +370,7 @@ void decodeRF() {
       int delta = abs((int)(tempC * 10) - 290);
       if (lastGoodId && id == lastGoodId) delta -= 30;
       if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20;
+      if (hum > 30) delta += 20;
 
       // track best overall
       if (delta < bestDelta) {
@@ -392,8 +393,10 @@ void decodeRF() {
   if (bestIdOff >= 0) {
     bestOff = bestIdOff; memcpy(bestD, bestIdD, PACKET_BYTES);
     bestTemp = bestIdTemp; bestHum = bestIdHum;
-  } else if (hasData && (bestOff < 0 || bestTemp > lastTempC + 5.0f || bestTemp < lastTempC - 5.0f)) {
-    return; // skip — no consistent packet found
+  } else if (lastTempC != 0.0f && bestOff >= 0) {
+    float maxDiff = hasData ? 5.0f : 10.0f;
+    if (bestTemp > lastTempC + maxDiff || bestTemp < lastTempC - maxDiff)
+      return; // skip — no consistent packet found
   }
   if (bestOff < 0) return;
   lastGoodOff = bestOff;

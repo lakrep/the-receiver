@@ -34,6 +34,14 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
   preventing random humidity noise.
+- **Station clips humidity <20% to 20% and >95% to 95%.**
+  Per the station spec: *"The indoor and outdoor humidity range is 20%-95%"*.
+  TX19 sensor sends true 15-21% but the base station's display doesn't go below
+  20%. Our decoder reports the real d[4] value.
+- **Neighbor CH2 rejection:** Another sensor on CH2 (23°C, 51% hum) is in range.
+  Scanner uses `if (hum > 30) delta += 20` to bias against high-humidity candidates.
+  Temperature consistency (±5°C fresh, ±10°C stale) uses `lastTempC != 0` instead
+  of `hasData`, persisting across stale timeouts to prevent wrong-sensor capture.
 
 ## RF Protocol (Geevon TX19-1 with LCD — reference only, NOT used)
 - 72-bit (9 byte), bits inverted, LFSR-8 checksum. See `rtl_433/src/devices/geevon_tx19.c`.
