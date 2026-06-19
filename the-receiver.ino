@@ -408,6 +408,20 @@ void decodeRF() {
   for (int i = 0; i < PACKET_BYTES; i++) { SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
   SERIAL_PRINT(println());
 
+  // humidity smoothing: reject jumps >3% unless stale (>10 min)
+  if (hasData && millis() - lastPacket < STALE_TIMEOUT) {
+    int8_t diff = (int8_t)bestHum - (int8_t)lastHum;
+    if (diff > 3 || diff < -3) {
+      bestHum = lastHum;  // keep previous value
+      printTimestamp();
+      SERIAL_PRINT(print(F("--- filtered hum jump: ")));
+      SERIAL_PRINT(print(bestTemp, 1));
+      SERIAL_PRINT(print(F("C ")));
+      SERIAL_PRINT(print(bestHum));
+      SERIAL_PRINT(println(F("%")));
+    }
+  }
+
   lastTempC = bestTemp;
   lastHum = bestHum;
   lastPacket = millis();
