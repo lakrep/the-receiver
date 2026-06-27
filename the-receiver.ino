@@ -50,6 +50,7 @@ struct Storage {
   uint16_t mqttPort;
   char mqttUser[32];
   char mqttPass[32];
+  uint16_t sensorId;
 };
 
 // ============================================================
@@ -247,6 +248,7 @@ void handleRoot() {
     "<label>MQTT Port</label><input name=mp value=1883>"
     "<label>MQTT Username</label><input name=mu>"
     "<label>MQTT Password</label><input name=mpw type=password>"
+    "<label>Sensor ID (hex, 0 = auto)</label><input name=sid value=0 placeholder='e.g. 1A3B'>"
     "<br><br><input type=submit value='Save & Reboot' style='background:#4CAF50;color:#fff;border:0;padding:12px;font-size:16px'>"
     "</form></body></html>");
   http.send(200, "text/html", page);
@@ -260,6 +262,7 @@ void handleSave() {
   if (cfg.mqttPort == 0) cfg.mqttPort = 1883;
   strlcpy(cfg.mqttUser, http.arg("mu").c_str(), sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPass, http.arg("mpw").c_str(), sizeof(cfg.mqttPass));
+  cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16);
   saveConfig();
   http.send(200, "text/html", F("<html><body><h2>Saved! Rebooting...</h2></body></html>"));
   delay(500);
@@ -359,6 +362,9 @@ void decodeRF() {
       if (channel != 2) continue;
       uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
+      // hard sensor ID filter
+      if (cfg.sensorId != 0 && id != cfg.sensorId) continue;
+
       // temp from 12-bit formula only
       float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
       if (tempC < -30 || tempC > 60) continue;
@@ -403,7 +409,9 @@ void decodeRF() {
   lastGoodId = ((uint16_t)bestD[0] << 8) | bestD[1];
 
   printTimestamp();
-  SERIAL_PRINT(print(F("RF: CH2  ")));
+  SERIAL_PRINT(print(F("RF: CH2 id=0x")));
+  SERIAL_PRINT(print(lastGoodId, HEX));
+  SERIAL_PRINT(print(F("  ")));
   SERIAL_PRINT(print(bestTemp, 1));
   SERIAL_PRINT(print(F("C  ")));
   SERIAL_PRINT(print(bestHum));
@@ -474,6 +482,9 @@ void setup() {
   if (!silent) Serial.println(F("\n=== the-receiver ==="));
 
   loadConfig();
+
+  // fix uninitialized sensorId (unwritten EEPROM reads 0xFFFF)
+  if (cfg.sensorId == 0xFFFF) cfg.sensorId = 0;
 
   if (configured) {
     SERIAL_PRINT(println(F("Config found in EEPROM")));

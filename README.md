@@ -81,6 +81,8 @@ hum     = d[4];                                       // byte 4 only
 - Uses 12-bit temperature formula (no alternative)
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
+- **Hard sensor ID filter:** if `sensorId` is configured (non-zero in EEPROM),
+  only packets matching that ID are accepted — all others are silently discarded.
 - **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
   preventing random humidity noise.
@@ -113,6 +115,7 @@ hum     = d[4];                                       // byte 4 only
 4. **Best-match** — among all CH2 candidates, the one with temperature closest
    to 29 °C is selected, with bonuses for matching last known sensor ID and
    bit offset (prevents drift to neighbour sensors on the same channel).
+   When a hard `sensorId` is configured, only matching candidates are considered.
 
 ## Usage
 
@@ -130,7 +133,9 @@ On first boot (or after EEPROM reset) the ESP starts an access point:
 1. Connect your phone/PC to WiFi SSID **the-receiver**
 2. Open http://192.168.4.1
 3. Enter your WiFi credentials and MQTT broker details
-4. Click "Save & Reboot"
+4. Optionally, set **Sensor ID** (hex) to lock the receiver to a specific
+   sensor — find the ID in serial log as `RF: CH2 id=0xXXXX`. Leave `0` for auto.
+5. Click "Save & Reboot"
 
 The device will then connect to your WiFi network and the MQTT broker.
 
@@ -158,6 +163,11 @@ Config found in EEPROM
 Connecting WiFi to MyNetwork
 WiFi OK: 192.168.1.42
 MQTT OK
+```
+
+Received RF packets are logged with sensor ID:
+```
+[14:23:45.123] RF: CH2 id=0x9D99  24.5C  57%  raw:9D 9B F0 12 39
 ```
 
 The built-in blue LED blinks briefly on each valid RF packet.

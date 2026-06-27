@@ -31,6 +31,7 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - `hum = d[4];`
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
+- **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets matching that ID are accepted — all others are silently discarded.
 - **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
   preventing random humidity noise.
@@ -64,8 +65,12 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - LED blink pattern in AP mode: 3×100ms + 1000ms pause state machine
 
 ## Key Architecture
-- Single `.ino` file, EEPROM stores WiFi+MQTT config in `Storage` struct (magic 0xDEAD)
-- First boot: AP mode "the-receiver" → http://192.168.4.1
+- Single `.ino` file, EEPROM stores WiFi+MQTT+config in `Storage` struct (magic 0xDEAD)
+  - Fields: `magic`, `wifiSSID`, `wifiPass`, `mqttHost`, `mqttPort`, `mqttUser`, `mqttPass`, `sensorId`
+  - `sensorId` is `0` (auto) by default; when non-zero only packets matching that ID are accepted
+- First boot (or cleared EEPROM): AP mode "the-receiver" → http://192.168.4.1
+- Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto)
+- Sensor ID is shown in serial log as `RF: CH2 id=0xXXXX` — copy this value into the web form to lock the receiver to one sensor
 - WiFi reconnect: 10s interval, 10 failures → fallback to AP
 - Publish interval: 120s, stale timeout: 600s
 - RF decode runs in interrupt, non-blocking LED timer replaces `delay()`
