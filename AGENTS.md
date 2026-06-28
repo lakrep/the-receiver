@@ -32,9 +32,9 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
 - **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets matching that ID are accepted — all others are silently discarded.
-- **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
+- **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
-  preventing random humidity noise.
+  preventing random humidity noise or wrong-sensor hijack.
 - **Station clips humidity <20% to 20% and >95% to 95%.**
   Per the station spec: *"The indoor and outdoor humidity range is 20%-95%"*.
   TX19 sensor sends true 15-21% but the base station's display doesn't go below

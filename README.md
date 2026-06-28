@@ -83,9 +83,9 @@ hum     = d[4];                                       // byte 4 only
   on the correct packet across transmissions
 - **Hard sensor ID filter:** if `sensorId` is configured (non-zero in EEPROM),
   only packets matching that ID are accepted — all others are silently discarded.
-- **Humidity smoothing:** Rejects humidity jumps greater than ±3% unless more than
+- **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
-  preventing random humidity noise.
+  preventing random humidity noise or wrong-sensor hijack.
 
 **Temperature formula confirmed:**
 - Raw 12-bit = `(d[2] << 4) | (d[3] >> 4)` (e.g. `0x118` = 280 → 28.0 °C)

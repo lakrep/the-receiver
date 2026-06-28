@@ -362,8 +362,8 @@ void decodeRF() {
       if (channel != 2) continue;
       uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
-      // hard sensor ID filter
-      if (cfg.sensorId != 0 && id != cfg.sensorId) continue;
+      // hard sensor ID filter (using mask 0x1FC0 to ignore AGC settling noise and channel/battery flags)
+      if (cfg.sensorId != 0 && (id & 0x1FC0) != (cfg.sensorId & 0x1FC0)) continue;
 
       // temp from 12-bit formula only
       float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
@@ -374,7 +374,7 @@ void decodeRF() {
       if (hum > 100) continue;
 
       int delta = abs((int)(tempC * 10) - 290);
-      if (lastGoodId && id == lastGoodId) delta -= 30;
+      if (lastGoodId && (id & 0x1FC0) == (lastGoodId & 0x1FC0)) delta -= 30;
       if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20;
       if (hum > 30) delta += 20;
 
@@ -385,7 +385,7 @@ void decodeRF() {
         bestTemp = tempC; bestHum = hum;
       }
       // track best matching known ID (fallback)
-      if (lastGoodId && id == lastGoodId && tempC < lastTempC + 5.0f && tempC > lastTempC - 5.0f) {
+      if (lastGoodId && (id & 0x1FC0) == (lastGoodId & 0x1FC0) && tempC < lastTempC + 5.0f && tempC > lastTempC - 5.0f) {
         if (delta < bestIdDelta) {
           bestIdDelta = delta; bestIdOff = off;
           memcpy(bestIdD, d, PACKET_BYTES);
@@ -411,25 +411,27 @@ void decodeRF() {
   printTimestamp();
   SERIAL_PRINT(print(F("RF: CH2 id=0x")));
   SERIAL_PRINT(print(lastGoodId, HEX));
-  SERIAL_PRINT(print(F("  ")));
+  SERIAL_PRINT(print(F(" (stable=0x")));
+  SERIAL_PRINT(print(lastGoodId & 0x1FC0, HEX));
+  SERIAL_PRINT(print(F(")  ")));
   SERIAL_PRINT(print(bestTemp, 1));
   SERIAL_PRINT(print(F("C  ")));
   SERIAL_PRINT(print(bestHum));
   SERIAL_PRINT(print(F("%  raw:")));
-  for (int i = 0; i < PACKET_BYTES; i++) { SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
+  for (int i = 0; i < PACKET_BYTES; i++) { if (bestD[i] < 0x10) SERIAL_PRINT(print("0")); SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
   SERIAL_PRINT(println());
 
-  // humidity smoothing: reject jumps >3% unless stale (>10 min)
+  // humidity smoothing: reject jumps >5% unless stale (>10 min)
   if (hasData && millis() - lastPacket < STALE_TIMEOUT) {
     int8_t diff = (int8_t)bestHum - (int8_t)lastHum;
-    if (diff > 3 || diff < -3) {
-      bestHum = lastHum;  // keep previous value
+    if (diff > 5 || diff < -5) {
       printTimestamp();
       SERIAL_PRINT(print(F("--- filtered hum jump: ")));
       SERIAL_PRINT(print(bestTemp, 1));
       SERIAL_PRINT(print(F("C ")));
       SERIAL_PRINT(print(bestHum));
       SERIAL_PRINT(println(F("%")));
+      return;  // reject entire packet to prevent wrong-sensor/corrupted capture
     }
   }
 
