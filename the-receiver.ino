@@ -27,7 +27,7 @@
 #define MARK_MIN      300
 #define MARK_MAX      1000
 #define SPACE_MIN     700
-#define SPACE_SHORT_MAX 1300
+#define SPACE_SHORT_MAX 1100
 #define SPACE_LONG_MIN 1500
 #define SPACE_MAX     5000
 #define IDLE_TIMEOUT  5000

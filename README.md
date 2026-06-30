@@ -47,7 +47,7 @@ Reverse-engineered from live captures. The sensor (Geevon TX19 **no LCD**) uses
 | Symbol       | Duration       | Meaning |
 |--------------|---------------|---------|
 | Mark (carrier) | 300–1000 µs  | Fixed pulse width (sync) |
-| Short space  | 700–1300 µs   | Bit 0   |
+| Short space  | 700–1100 µs   | Bit 0   |
 | Long space   | 1500–5000 µs  | Bit 1   |
 
 **Note:** This is NOT the 72-bit TX19-1 (with LCD) protocol. Do not use
@@ -105,7 +105,7 @@ hum     = d[4];                                       // byte 4 only
    buffer, treating the next pulses as a new packet.
 
 2. **Bit extraction** — marks (carrier) and spaces are paired:
-   - `mark` 300–1000 µs + `space` 700–1300 µs → **bit 0**
+   - `mark` 300–1000 µs + `space` 700–1100 µs → **bit 0**
    - `mark` 300–1000 µs + `space` 1500–5000 µs → **bit 1**
    - Anything else → invalid
 

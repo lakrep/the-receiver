@@ -12,8 +12,8 @@
 
 ## RF Protocol (Geevon TX19 no LCD — this device)
 - **40-bit (5 byte)** packet (NOT 72-bit TX19-1). Bits NOT inverted (inv=1 for CH2, inv=0 for CH1).
-- OOK space-encoded: mark ~300-1000µs, space ~700-1300µs = 0, space ~1500-5000µs = 1
-- Timing constants: `SPACE_MIN=700`, `SPACE_SHORT_MAX=1300`, `SPACE_LONG_MIN=1500`, `SPACE_MAX=5000`
+- OOK space-encoded: mark ~300-1000µs, space ~700-1100µs = 0, space ~1500-5000µs = 1
+- Timing constants: `SPACE_MIN=700`, `SPACE_SHORT_MAX=1100`, `SPACE_LONG_MIN=1500`, `SPACE_MAX=5000`
 
 ### Packet layout
 ```
