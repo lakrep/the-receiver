@@ -62,7 +62,7 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 
 | Field       | Position     | Size | Description |
 |-------------|-------------|------|-------------|
-| ID          | d[0]–d[1]   | 16   | Sensor ID (0x7D99, 0xDD99, etc.) |
+| ID          | d[0]–d[1]   | 16   | Sensor ID; only `id & 0x1FC0` is stable (top 3 bits of d[0] drift: 1D99, 3D99 … FD99 are the same sensor) |
 | Channel     | d[1] >> 4   | 4    | `8→CH1`, `9→CH2`, `A→CH3` |
 | Battery     | d[1] & 0x08 | 1    | 0 = OK                     |
 | Temperature | d[2]..d[3]  | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
@@ -82,7 +82,9 @@ hum     = d[4];                                       // byte 4 only
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
 - **Hard sensor ID filter:** if `sensorId` is configured (non-zero in EEPROM),
-  only packets matching that ID are accepted — all others are silently discarded.
+  only packets whose `id & 0x1FC0` equals it are accepted — all others are silently discarded.
+  The value is masked with `0x1FC0` when saved and when loaded, so `9D99` and `1D80` are equivalent.
+- **Tail check:** `d[3] & 0x0F` must be `0xF` (true for every good packet in a 41 h capture).
 - **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
   preventing random humidity noise or wrong-sensor hijack.
@@ -134,7 +136,8 @@ On first boot (or after EEPROM reset) the ESP starts an access point:
 2. Open http://192.168.4.1
 3. Enter your WiFi credentials and MQTT broker details
 4. Optionally, set **Sensor ID** (hex) to lock the receiver to a specific
-   sensor — find the ID in serial log as `RF: CH2 id=0xXXXX`. Leave `0` for auto.
+   sensor — use the `stable=0xXXXX` value from the serial log line `RF: CH2 id=0x... (stable=0x...)`.
+   The active filter is printed at boot as `Sensor ID filter: 0x...`. Leave `0` for auto.
 5. Click "Save & Reboot"
 
 The device will then connect to your WiFi network and the MQTT broker.
@@ -167,7 +170,7 @@ MQTT OK
 
 Received RF packets are logged with sensor ID:
 ```
-[14:23:45.123] RF: CH2 id=0x9D99  24.5C  57%  raw:9D 9B F0 12 39
+[14:23:45.123] RF: CH2 id=0x9D99 (stable=0x1D80)  24.5C  57%  raw:9D 99 F0 1F 39
 ```
 
 The built-in blue LED blinks briefly on each valid RF packet.

@@ -31,7 +31,10 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - `hum = d[4];`
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
-- **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets matching that ID are accepted — all others are silently discarded.
+- **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets with `(id & ID_MASK) == cfg.sensorId` are accepted — all others are silently discarded.
+  `ID_MASK = 0x1FC0`: top 3 bits of d[0] drift between packets (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are battery/flags.
+  `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
+- **Tail check:** `(d[3] & 0x0F) == 0x0F` required (held for 1778/1778 good packets; corrupted tails often break it).
 - **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
   10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
   preventing random humidity noise or wrong-sensor hijack.
@@ -70,7 +73,8 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
   - `sensorId` is `0` (auto) by default; when non-zero only packets matching that ID are accepted
 - First boot (or cleared EEPROM): AP mode "the-receiver" → http://192.168.4.1
 - Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto)
-- Sensor ID is shown in serial log as `RF: CH2 id=0xXXXX` — copy this value into the web form to lock the receiver to one sensor
+- Serial log shows `RF: CH2 id=0xXXXX (stable=0xYYYY)` — copy the **stable** value into the web form to lock the receiver to one sensor
+- Boot log prints `Sensor ID filter: 0x...` (or `off (auto)`) — check it to confirm the saved value
 - WiFi reconnect: 10s interval, 10 failures → fallback to AP
 - Publish interval: 120s, stale timeout: 600s
 - RF decode runs in interrupt, non-blocking LED timer replaces `delay()`

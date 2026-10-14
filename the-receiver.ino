@@ -36,6 +36,11 @@
 #define PACKET_BITS   40
 #define PACKET_BYTES  5
 
+// Sensor ID = d[0]<<8 | d[1]. Only bits 12..6 (d[0] low 5 bits + d[1] bits 7-6) are stable:
+// the top 3 bits of d[0] drift between packets (seen 1D/3D/5D/7D/9D/BD/DD/FD for one sensor),
+// d[1] low bits carry battery/flags. Config and comparisons always use id & ID_MASK.
+#define ID_MASK       0x1FC0
+
 // ============================================================
 // EEPROM configuration
 // ============================================================
@@ -233,6 +238,8 @@ void publishState() {
 // Web config portal
 // ============================================================
 void handleRoot() {
+  char sid[8];
+  snprintf(sid, sizeof(sid), "%X", cfg.sensorId);
   String page = F(
     "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>the-receiver Setup</title><style>"
@@ -248,7 +255,10 @@ void handleRoot() {
     "<label>MQTT Port</label><input name=mp value=1883>"
     "<label>MQTT Username</label><input name=mu>"
     "<label>MQTT Password</label><input name=mpw type=password>"
-    "<label>Sensor ID (hex, 0 = auto)</label><input name=sid value=0 placeholder='e.g. 1A3B'>"
+    "<label>Sensor ID (hex, 0 = auto)</label><input name=sid value=");
+  page += sid;
+  page += F(" placeholder='e.g. 1D80'>"
+    "<small>Use the stable= value from the serial log. Only bits 0x1FC0 are compared.</small>"
     "<br><br><input type=submit value='Save & Reboot' style='background:#4CAF50;color:#fff;border:0;padding:12px;font-size:16px'>"
     "</form></body></html>");
   http.send(200, "text/html", page);
@@ -262,7 +272,7 @@ void handleSave() {
   if (cfg.mqttPort == 0) cfg.mqttPort = 1883;
   strlcpy(cfg.mqttUser, http.arg("mu").c_str(), sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPass, http.arg("mpw").c_str(), sizeof(cfg.mqttPass));
-  cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16);
+  cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16) & ID_MASK;
   saveConfig();
   http.send(200, "text/html", F("<html><body><h2>Saved! Rebooting...</h2></body></html>"));
   delay(500);
@@ -323,17 +333,16 @@ void decodeRF() {
   if (count < 10) return;
 
   uint8_t bits[MAX_BITS];
-  int bitCount = 0, valid = 0, invalid = 0;
+  int bitCount = 0;
   for (int i = 1; i < count - 1; i += 2) {
     uint16_t m = timings[i];
     uint16_t s = timings[i + 1];
-    if (m < MARK_MIN || m > MARK_MAX || s < SPACE_MIN) { invalid++; continue; }
+    if (m < MARK_MIN || m > MARK_MAX || s < SPACE_MIN) continue;
     if (s <= SPACE_SHORT_MAX) {
       if (bitCount < MAX_BITS) bits[bitCount++] = 0;
     } else if (s >= SPACE_LONG_MIN && s <= SPACE_MAX) {
       if (bitCount < MAX_BITS) bits[bitCount++] = 1;
-    } else { invalid++; continue; }
-    valid++;
+    }
   }
 
   if (bitCount < PACKET_BITS) return;
@@ -362,8 +371,11 @@ void decodeRF() {
       if (channel != 2) continue;
       uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
-      // hard sensor ID filter (using mask 0x1FC0 to ignore AGC settling noise and channel/battery flags)
-      if (cfg.sensorId != 0 && (id & 0x1FC0) != (cfg.sensorId & 0x1FC0)) continue;
+      // d[3] low nibble was 0xF in all 1778 good packets of a 41 h capture, never in corrupted tails
+      if ((d[3] & 0x0F) != 0x0F) continue;
+
+      // hard sensor ID filter (ID_MASK drops the drifting top bits and channel/battery flags)
+      if (cfg.sensorId != 0 && (id & ID_MASK) != cfg.sensorId) continue;
 
       // temp from 12-bit formula only
       float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
@@ -374,7 +386,7 @@ void decodeRF() {
       if (hum > 100) continue;
 
       int delta = abs((int)(tempC * 10) - 290);
-      if (lastGoodId && (id & 0x1FC0) == (lastGoodId & 0x1FC0)) delta -= 30;
+      if (lastGoodId && (id & ID_MASK) == (lastGoodId & ID_MASK)) delta -= 30;
       if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20;
       if (hum > 30) delta += 20;
 
@@ -385,7 +397,7 @@ void decodeRF() {
         bestTemp = tempC; bestHum = hum;
       }
       // track best matching known ID (fallback)
-      if (lastGoodId && (id & 0x1FC0) == (lastGoodId & 0x1FC0) && tempC < lastTempC + 5.0f && tempC > lastTempC - 5.0f) {
+      if (lastGoodId && (id & ID_MASK) == (lastGoodId & ID_MASK) && tempC < lastTempC + 5.0f && tempC > lastTempC - 5.0f) {
         if (delta < bestIdDelta) {
           bestIdDelta = delta; bestIdOff = off;
           memcpy(bestIdD, d, PACKET_BYTES);
@@ -405,14 +417,13 @@ void decodeRF() {
       return; // skip — no consistent packet found
   }
   if (bestOff < 0) return;
-  lastGoodOff = bestOff;
-  lastGoodId = ((uint16_t)bestD[0] << 8) | bestD[1];
+  uint16_t bestId = ((uint16_t)bestD[0] << 8) | bestD[1];
 
   printTimestamp();
   SERIAL_PRINT(print(F("RF: CH2 id=0x")));
-  SERIAL_PRINT(print(lastGoodId, HEX));
+  SERIAL_PRINT(print(bestId, HEX));
   SERIAL_PRINT(print(F(" (stable=0x")));
-  SERIAL_PRINT(print(lastGoodId & 0x1FC0, HEX));
+  SERIAL_PRINT(print(bestId & ID_MASK, HEX));
   SERIAL_PRINT(print(F(")  ")));
   SERIAL_PRINT(print(bestTemp, 1));
   SERIAL_PRINT(print(F("C  ")));
@@ -435,6 +446,9 @@ void decodeRF() {
     }
   }
 
+  // accepted: only now remember ID/offset, so rejected packets cannot steer the lock-on
+  lastGoodOff = bestOff;
+  lastGoodId = bestId;
   lastTempC = bestTemp;
   lastHum = bestHum;
   lastPacket = millis();
@@ -487,6 +501,15 @@ void setup() {
 
   // fix uninitialized sensorId (unwritten EEPROM reads 0xFFFF)
   if (cfg.sensorId == 0xFFFF) cfg.sensorId = 0;
+  cfg.sensorId &= ID_MASK;  // values saved before masking (e.g. 9D99) become 1D80
+
+  printTimestamp();
+  if (cfg.sensorId) {
+    SERIAL_PRINT(print(F("Sensor ID filter: 0x")));
+    SERIAL_PRINT(println(cfg.sensorId, HEX));
+  } else {
+    SERIAL_PRINT(println(F("Sensor ID filter: off (auto)")));
+  }
 
   if (configured) {
     SERIAL_PRINT(println(F("Config found in EEPROM")));
