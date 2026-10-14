@@ -35,9 +35,11 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
   `ID_MASK = 0x1FC0`: top 3 bits of d[0] drift between packets (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are battery/flags.
   `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
 - **Tail check:** `(d[3] & 0x0F) == 0x0F` required (held for 1778/1778 good packets; corrupted tails often break it).
-- **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
-  10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
-  preventing random humidity noise or wrong-sensor hijack.
+- **Humidity smoothing:** a jump greater than ±5% (`HUM_JUMP_MAX`) holds the packet back (`--- hum jump pending`, nothing
+  published, lock-on state untouched). The next packet confirms it if humidity differs ≤2% and temperature ≤1 °C
+  from the held one within `PENDING_TIMEOUT` (5 min) → accepted (`--- hum jump confirmed`). Single noise packets
+  never get through; real changes (a 2026-10-14 storm: 71→80% humidity, 13.7→11 °C in 10 min, rejected for 8 min
+  by the old reject-only filter) pass after 2 packets. After 10 minutes (`STALE_TIMEOUT`) without a valid packet any packet is accepted.
 - **Station clips humidity <20% to 20% and >95% to 95%.**
   Per the station spec: *"The indoor and outdoor humidity range is 20%-95%"*.
   TX19 sensor sends true 15-21% but the base station's display doesn't go below

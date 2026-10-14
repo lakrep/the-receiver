@@ -85,9 +85,12 @@ hum     = d[4];                                       // byte 4 only
   only packets whose `id & 0x1FC0` equals it are accepted — all others are silently discarded.
   The value is masked with `0x1FC0` when saved and when loaded, so `9D99` and `1D80` are equivalent.
 - **Tail check:** `d[3] & 0x0F` must be `0xF` (true for every good packet in a 41 h capture).
-- **Humidity smoothing:** Rejects the entire packet if humidity jumps greater than ±5% unless more than
-  10 minutes (`STALE_TIMEOUT`) have passed since the last valid transmission,
-  preventing random humidity noise or wrong-sensor hijack.
+- **Humidity smoothing:** a packet whose humidity jumps by more than ±5% is held back
+  (`--- hum jump pending`) and not published. If the next packet agrees with it
+  (humidity ±2%, temperature ±1 °C, within 5 minutes) it is accepted
+  (`--- hum jump confirmed`), so real changes such as a storm pass after ~2 minutes while
+  single noise packets are dropped. After more than 10 minutes (`STALE_TIMEOUT`) without a valid
+  transmission any packet is accepted.
 
 **Temperature formula confirmed:**
 - Raw 12-bit = `(d[2] << 4) | (d[3] >> 4)` (e.g. `0x118` = 280 → 28.0 °C)

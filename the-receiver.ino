@@ -81,6 +81,12 @@ struct Storage {
 #define RECONNECT_DELAY   10000    // 10 s between WiFi/MQTT retries
 #define CONFIG_TIMEOUT    300000   // 5 min in AP mode before reboot
 
+// Humidity jump handling: a jump > HUM_JUMP_MAX is held back until the next packet confirms it
+#define HUM_JUMP_MAX      5        // % between consecutive accepted packets
+#define HUM_CONFIRM_TOL   2        // % allowed between the two confirming packets
+#define TEMP_CONFIRM_TOL  1.0f     // °C allowed between the two confirming packets
+#define PENDING_TIMEOUT   300000   // ms a held-back packet waits for confirmation
+
 #define SERIAL_PRINT(...)  do { if (!silent) { Serial.__VA_ARGS__; } } while(0)
 
 // ============================================================
@@ -566,19 +572,35 @@ void decodeRF() {
   for (int i = 0; i < PACKET_BYTES; i++) { if (bestD[i] < 0x10) SERIAL_PRINT(print("0")); SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
   SERIAL_PRINT(println());
 
-  // humidity smoothing: reject jumps >5% unless stale (>10 min)
+  // humidity smoothing: a jump > HUM_JUMP_MAX is not accepted at once (noise, wrong sensor),
+  // but a second packet that agrees with it (real weather change, e.g. a storm) is.
+  // Stale data (> STALE_TIMEOUT) is accepted without any check.
+  static bool hasPending = false;
+  static float pendTemp = 0;
+  static uint8_t pendHum = 0;
+  static unsigned long pendTime = 0;
   if (hasData && millis() - lastPacket < STALE_TIMEOUT) {
-    int8_t diff = (int8_t)bestHum - (int8_t)lastHum;
-    if (diff > 5 || diff < -5) {
+    int diff = (int)bestHum - (int)lastHum;
+    if (diff > HUM_JUMP_MAX || diff < -HUM_JUMP_MAX) {
+      bool confirmed = hasPending && millis() - pendTime < PENDING_TIMEOUT &&
+                       abs((int)bestHum - (int)pendHum) <= HUM_CONFIRM_TOL &&
+                       fabsf(bestTemp - pendTemp) <= TEMP_CONFIRM_TOL;
       printTimestamp();
-      SERIAL_PRINT(print(F("--- filtered hum jump: ")));
+      SERIAL_PRINT(print(confirmed ? F("--- hum jump confirmed: ") : F("--- hum jump pending: ")));
       SERIAL_PRINT(print(bestTemp, 1));
       SERIAL_PRINT(print(F("C ")));
       SERIAL_PRINT(print(bestHum));
       SERIAL_PRINT(println(F("%")));
-      return;  // reject entire packet to prevent wrong-sensor/corrupted capture
+      if (!confirmed) {
+        hasPending = true;
+        pendTemp = bestTemp;
+        pendHum = bestHum;
+        pendTime = millis();
+        return;  // hold back, do not touch lock-on state or published values
+      }
     }
   }
+  hasPending = false;
 
   // accepted: only now remember ID/offset, so rejected packets cannot steer the lock-on
   lastGoodOff = bestOff;
