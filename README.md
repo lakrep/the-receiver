@@ -175,6 +175,31 @@ Received RF packets are logged with sensor ID:
 
 The built-in blue LED blinks briefly on each valid RF packet.
 
+### Capturing the log (`capture_log.py`)
+
+`capture_log.py` records the serial output to a file, e.g. for long test runs
+on a Windows PC.
+
+```
+pip install pyserial
+python capture_log.py COM3
+```
+
+| Option   | Default      | Description |
+|----------|--------------|-------------|
+| `port`   | (required)   | Serial port name, e.g. `COM3` |
+| `--baud` | `115200`     | Baud rate |
+| `--out`  | `output.log` | Output file, relative to the current directory |
+
+- Lines are written as received (the firmware already adds `[hh:mm:ss.ms]`),
+  flushed immediately and echoed to the console.
+- The file is opened in append mode, so existing logs are kept.
+- If the port disappears (USB unplugged), the script retries every 2 s and
+  keeps appending to the same file. Stop with Ctrl+C.
+- Opening the port usually resets the D1 Mini via DTR, so the log starts with
+  the boot messages (`Sensor ID filter: ...`).
+- `output.log` is listed in `.gitignore`.
+
 ## References
 
 - [rtl_433](https://github.com/merbanan/rtl_433) — Geevon TX19 decoder (issue #3438)
