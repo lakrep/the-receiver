@@ -1,1 +1,4 @@
 *.log
+docs*
+.codemie*
+.DS_Store*

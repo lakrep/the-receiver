@@ -172,8 +172,8 @@ Output at 115200 baud (USB-only; silent when no serial host):
 [00:00:00.120] Config found in EEPROM
 [00:00:00.125] Connecting WiFi to MyNetwork
 [00:00:04.406] WiFi OK: 192.168.1.42
-[00:00:04.410] NTP: syncing with pl.pool.ntp.org, TZ CET-1CEST,M3.5.0,M10.5.0/3
-[15:04:05.512] NTP: synced 2026-10-14 15:04:05
+[00:00:04.410] NTP: syncing with pl.pool.ntp.org
+[16:04:05.512] NTP: synced 2026-10-14 16:04:05 (UTC+2:00, Warsaw)
 [15:04:05.514] Sensor ID filter: 0x1D80
 [15:04:05.620] MQTT OK
 ```

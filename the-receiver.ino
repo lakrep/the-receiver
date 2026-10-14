@@ -8,7 +8,7 @@
   First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT + NTP
   Subsequent boots: read from EEPROM, connect WiFi → NTP sync → print sensor ID →
   MQTT → HA Discovery → start RF decoding. NTP is re-synced every 3 hours.
-  Requires ESP8266 Arduino core >= 2.7 (configTime with TZ string).
+  Local time is computed here (EU DST rules for Warsaw, or a fixed offset), not by libc TZ.
 */
 
 #include <EEPROM.h>
@@ -49,7 +49,6 @@
 // NTP / time zone
 // ============================================================
 #define NTP_DEFAULT_SERVER  "pl.pool.ntp.org"
-#define NTP_DEFAULT_TZ      "CET-1CEST,M3.5.0,M10.5.0/3"  // Warsaw, with DST
 #define NTP_SYNC_TIMEOUT    15000                         // ms to wait for the first sync
 #define NTP_RESYNC_MS       (3UL * 60 * 60 * 1000)        // periodic re-sync
 #define MIN_VALID_EPOCH     1700000000                    // anything below = clock not set
@@ -70,7 +69,7 @@ struct Storage {
   char mqttPass[32];
   uint16_t sensorId;
   char ntpServer[40];     // empty = NTP_DEFAULT_SERVER
-  uint8_t tzCustom;       // 1 = use gmtOffsetMin, otherwise NTP_DEFAULT_TZ (Warsaw)
+  uint8_t tzCustom;       // 1 = use gmtOffsetMin, otherwise Warsaw (CET/CEST, EU DST rules)
   int16_t gmtOffsetMin;   // minutes east of UTC, valid only when tzCustom == 1
 };
 
@@ -171,24 +170,46 @@ extern "C" uint32_t sntp_update_delay_MS_rfc_not_less_than_15000() {
   return NTP_RESYNC_MS;
 }
 
+// days since 1970-01-01 for a civil date (proleptic Gregorian)
+long daysFromCivil(int y, int m, int d) {
+  y -= m <= 2;
+  long era = (y >= 0 ? y : y - 399) / 400;
+  long yoe = y - era * 400;
+  long doy = (153L * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+// 01:00 UTC on the last Sunday of the given month (March or October, both have 31 days)
+time_t lastSundayUtc(int year, int month) {
+  long days = daysFromCivil(year, month, 31);
+  int dow = (int)((days + 4) % 7);  // 1970-01-01 was Thursday; 0 = Sunday
+  return (time_t)(days - dow) * 86400 + 3600;
+}
+
+// seconds to add to UTC to get local time
+int localOffsetSec(time_t utc) {
+  if (cfg.tzCustom) return cfg.gmtOffsetMin * 60;
+  struct tm t;
+  gmtime_r(&utc, &t);
+  int year = t.tm_year + 1900;
+  bool dst = utc >= lastSundayUtc(year, 3) && utc < lastSundayUtc(year, 10);
+  return dst ? 7200 : 3600;  // Warsaw: CEST = UTC+2, CET = UTC+1
+}
+
+void toLocal(time_t utc, struct tm *out) {
+  time_t local = utc + localOffsetSec(utc);
+  gmtime_r(&local, out);
+}
+
 void syncTime() {
   const char *server = cfg.ntpServer[0] ? cfg.ntpServer : NTP_DEFAULT_SERVER;
-  char tz[24];
-  if (cfg.tzCustom) {
-    // POSIX TZ sign is inverted: UTC-3:00 means 3 hours east of UTC
-    int m = cfg.gmtOffsetMin;
-    snprintf(tz, sizeof(tz), "UTC%s%d:%02d", m >= 0 ? "-" : "+", abs(m) / 60, abs(m) % 60);
-  } else {
-    strlcpy(tz, NTP_DEFAULT_TZ, sizeof(tz));
-  }
 
   printTimestamp();
   SERIAL_PRINT(print(F("NTP: syncing with ")));
-  SERIAL_PRINT(print(server));
-  SERIAL_PRINT(print(F(", TZ ")));
-  SERIAL_PRINT(println(tz));
+  SERIAL_PRINT(println(server));
 
-  configTime(tz, server);
+  configTime(0L, 0, server);  // system clock stays UTC, local time is derived in toLocal()
   unsigned long start = millis();
   while (!timeIsValid() && millis() - start < NTP_SYNC_TIMEOUT) {
     delay(100);
@@ -198,9 +219,12 @@ void syncTime() {
   if (timeIsValid()) {
     time_t now = time(nullptr);
     struct tm t;
-    localtime_r(&now, &t);
-    char buf[24];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
+    toLocal(now, &t);
+    int off = localOffsetSec(now) / 60;
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d (UTC%+d:%02d%s)",
+             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec,
+             off / 60, abs(off) % 60, cfg.tzCustom ? "" : ", Warsaw");
     SERIAL_PRINT(print(F("NTP: synced ")));
     SERIAL_PRINT(println(buf));
   } else {
@@ -577,7 +601,7 @@ void printTimestamp() {
   if (tv.tv_sec > MIN_VALID_EPOCH) {
     // NTP-synced local (Warsaw by default) wall clock
     struct tm t;
-    localtime_r(&tv.tv_sec, &t);
+    toLocal(tv.tv_sec, &t);
     h = t.tm_hour; m = t.tm_min; s = t.tm_sec;
     ms = tv.tv_usec / 1000;
   } else {
