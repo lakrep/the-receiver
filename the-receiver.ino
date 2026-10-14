@@ -3,7 +3,7 @@
   Board: NodeMCU D1 Mini (ESP-12F)
 
   40-bit (5 byte), temperature 12-bit (d[2]<<4 | d[3]>>4) * 0.1, humidity d[4],
-  channel (d[1]>>4) - 7 (8=CH1, 9=CH2, A=CH3), battery d[1] bit 3.
+  channel ((d[1]>>4) & 3) + 1 (bits 5-4 of d[1], as in rtl_433 TX19-1), battery unconfirmed.
 
   First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT + NTP
   Subsequent boots: read from EEPROM, connect WiFi → NTP sync → print sensor ID →
@@ -42,7 +42,7 @@
 
 // Sensor ID = d[0]<<8 | d[1]. Only bits 12..6 (d[0] low 5 bits + d[1] bits 7-6) are stable:
 // the top 3 bits of d[0] drift between packets (seen 1D/3D/5D/7D/9D/BD/DD/FD for one sensor),
-// d[1] low bits carry battery/flags. Config and comparisons always use id & ID_MASK.
+// d[1] low bits carry flags. Config and comparisons always use id & ID_MASK.
 #define ID_MASK       0x1FC0
 
 // ============================================================
@@ -507,12 +507,15 @@ void decodeRF() {
       for (int b = 0; b < PACKET_BITS; b++)
         d[b / 8] = (d[b / 8] << 1) | ((bits[off + b] & 1) ^ inv);
       if (d[0] == 0xFF && d[1] == 0xFF) continue;
-      uint8_t channel = (d[1] >> 4) - 7;
+      uint8_t channel = ((d[1] >> 4) & 3) + 1;
       if (channel != 2) continue;
       uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
       // d[3] low nibble was 0xF in all 1778 good packets of a 41 h capture, never in corrupted tails
       if ((d[3] & 0x0F) != 0x0F) continue;
+
+      // d[0] top 3 bits copy the humidity low 3 bits (97% of 1872 packets); a mismatch means corruption
+      if ((d[0] >> 5) != (d[4] & 7)) continue;
 
       // hard sensor ID filter (ID_MASK drops the drifting top bits and channel/battery flags)
       if (cfg.sensorId != 0 && (id & ID_MASK) != cfg.sensorId) continue;

@@ -69,8 +69,10 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 |-------------|----------------|------|-------------|
 | `hhh`       | d[0] >> 5      | 3    | Copy of the 3 low bits of humidity (`d[4] & 7`), see *Integrity check* below. **Not** part of the ID |
 | ID          | d[0] & 0x1F    | 5    | Sensor ID (`0x1D` for the author's sensor). The firmware compares `id & 0x1FC0`, which adds the two constant top bits of the channel nibble |
-| Channel     | d[1] >> 4      | 4    | `8→CH1`, `9→CH2`, `A→CH3` (the decoder accepts CH2 only) |
-| Flags       | d[1] & 0x0F    | 4    | Observed `0x9` in 99.9 % of packets, `0x1` in 2 of 1796. Bit 3 may be the battery flag, meaning unconfirmed; the decoder ignores it |
+| Channel     | (d[1] >> 4) & 3 | 2   | `0→CH1`, `1→CH2`, `2→CH3` (same bits as rtl_433 TX19-1; the decoder accepts CH2 only) |
+| Bit 7       | d[1] >> 7      | 1    | Always 1 in all captured packets. In rtl_433 TX19-1 this is the battery bit (1 = low); polarity for this sensor unconfirmed |
+| Bit 6       | d[1] >> 6 & 1  | 1    | Always 0 in all captured packets |
+| Flags       | d[1] & 0x0F    | 4    | Observed `0x9` in 99.9 % of packets, `0x1` in 2 of 1796; meaning unknown, the decoder ignores it |
 | Temperature | d[2]..d[3]     | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
 | Constant    | d[3] & 0x0F    | 4    | Always `0xF` in good packets (used as a tail check) |
 | Humidity    | d[4]           | 8    | Relative humidity %        |
@@ -91,13 +93,14 @@ Evidence from two captures (41 h and 2.2 h, 1872 packets): the rule holds in 181
 accepted also failed it, so their humidity could be off by up to 7 %. Packets in a real
 weather change (a storm: humidity 71 → 80 %) satisfy the rule.
 
-**Status:** documented, but not yet enforced by the firmware. Enforcing it would reject
-about 3-5 % of packets (the sensor transmits every ~67 s, and about 17 % are already lost
-to reception) in exchange for keeping corrupted humidity values out of MQTT.
+**Status:** enforced by the firmware: packets that fail it are discarded. This costs about
+3-5 % of packets (the sensor transmits every ~67 s, and about 17 % are already lost to
+reception) and keeps corrupted humidity values out of MQTT. Example caught by it: `BD 99 06 6F 5B`
+(91 % instead of the real 86 %, jump of exactly 5 so the jump filter let it through).
 
 **Decoding:**
 ```c
-channel = (d[1] >> 4) - 7;                       // CH1/CH2/CH3
+channel = ((d[1] >> 4) & 3) + 1;                 // CH1/CH2/CH3
 tempC   = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;  // 12-bit, NO -500 offset
 hum     = d[4];                                       // byte 4 only
 ```
@@ -112,7 +115,7 @@ hum     = d[4];                                       // byte 4 only
   only packets whose `id & 0x1FC0` equals it are accepted — all others are silently discarded.
   The value is masked with `0x1FC0` when saved and when loaded, so `9D99` and `1D80` are equivalent.
 - **Tail check:** `d[3] & 0x0F` must be `0xF` (true for every good packet in a 41 h capture).
-- **Not checked yet:** `d[0] >> 5 == d[4] & 7` (see *Integrity check* above).
+- **Integrity check:** `d[0] >> 5` must equal `d[4] & 7` (see *Integrity check* above).
 - **Humidity smoothing:** a packet whose humidity jumps by more than ±5% is held back
   (`--- hum jump pending`) and not published. If the next packet agrees with it
   (humidity ±2%, temperature ±1 °C, within 5 minutes) it is accepted
@@ -143,7 +146,7 @@ hum     = d[4];                                       // byte 4 only
    - Anything else → invalid
 
 3. **40-bit scan** — every possible offset and inversion is tested. Candidates
-   are validated by channel (must be CH2, nibble `9`), tail nibble `0xF`, the
+   are validated by channel (must be CH2), tail nibble `0xF`, `d[0]>>5 == d[4]&7`, the
    sensor ID filter (if set), temperature range (-30…60 °C) and humidity (≤ 100 %).
 
 4. **Best-match** — among all candidates, the one with temperature closest

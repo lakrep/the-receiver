@@ -20,14 +20,14 @@
 Byte 0    Byte 1    Byte 2    Byte 3    Byte 4
 hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 ```
-- **Byte 0:** bits 7-5 = copy of humidity low 3 bits (`d[0]>>5 == d[4]&7`, 97.2 % of 1872 packets; NOT part of the ID — corrupted packets break it, **not enforced yet**); bits 4-0 = ID (0x1D)
-- **Byte 1:** Bits 7-4 = channel-7 (8=CH1, 9=CH2, A=CH3), low nibble = flags (observed 0x9, rarely 0x1; battery meaning unconfirmed)
+- **Byte 0:** bits 7-5 = copy of humidity low 3 bits (`d[0]>>5 == d[4]&7`, 97.2 % of 1872 packets; NOT part of the ID — corrupted packets break it; **enforced**, mismatch → packet discarded); bits 4-0 = ID (0x1D)
+- **Byte 1:** bits 5-4 = channel-1 (0=CH1, 1=CH2, 2=CH3, as in rtl_433 TX19-1); bit 7 always 1 and bit 6 always 0 in captures (rtl_433: bit 7 = battery, 1 = low; unconfirmed here); low nibble = flags (observed 0x9, rarely 0x1)
 - **Byte 3 low nibble:** always 0xF (tail check)
 - **Byte 2-3:** Temperature 12-bit — `((d[2]<<4 | d[3]>>4)) * 0.1°C` (NO -500 offset)
 - **Byte 4:** Humidity %
 
 ### Decoding
-- `channel = (d[1] >> 4) - 7;`
+- `channel = ((d[1] >> 4) & 3) + 1;`
 - `tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;`
 - `hum = d[4];`
 - No checksum verified yet.
@@ -35,6 +35,7 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 - **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets with `(id & ID_MASK) == cfg.sensorId` are accepted — all others are silently discarded.
   `ID_MASK = 0x1FC0`: top 3 bits of d[0] follow the humidity low bits (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are flags.
   `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
+- **Integrity check:** `(d[0] >> 5) == (d[4] & 7)` required (97 % of packets; the rest are corrupted, e.g. `BD 99 06 6F 5B` = false 91 %).
 - **Tail check:** `(d[3] & 0x0F) == 0x0F` required (held for 1778/1778 good packets; corrupted tails often break it).
 - **Humidity smoothing:** a jump greater than ±5% (`HUM_JUMP_MAX`) holds the packet back (`--- hum jump pending`, nothing
   published, lock-on state untouched). The next packet confirms it if humidity differs ≤2% and temperature ≤1 °C
