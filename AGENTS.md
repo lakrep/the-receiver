@@ -18,10 +18,11 @@
 ### Packet layout
 ```
 Byte 0    Byte 1    Byte 2    Byte 3    Byte 4
-IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
+hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 ```
-- **Byte 0:** ID high byte
-- **Byte 1:** Bits 7-4 = channel-7 (8=CH1, 9=CH2, A=CH3), Bits 3-2 = battery(bit3) + flags
+- **Byte 0:** bits 7-5 = copy of humidity low 3 bits (`d[0]>>5 == d[4]&7`, 97.2 % of 1872 packets; NOT part of the ID — corrupted packets break it, **not enforced yet**); bits 4-0 = ID (0x1D)
+- **Byte 1:** Bits 7-4 = channel-7 (8=CH1, 9=CH2, A=CH3), low nibble = flags (observed 0x9, rarely 0x1; battery meaning unconfirmed)
+- **Byte 3 low nibble:** always 0xF (tail check)
 - **Byte 2-3:** Temperature 12-bit — `((d[2]<<4 | d[3]>>4)) * 0.1°C` (NO -500 offset)
 - **Byte 4:** Humidity %
 
@@ -32,7 +33,7 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
 - **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets with `(id & ID_MASK) == cfg.sensorId` are accepted — all others are silently discarded.
-  `ID_MASK = 0x1FC0`: top 3 bits of d[0] drift between packets (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are battery/flags.
+  `ID_MASK = 0x1FC0`: top 3 bits of d[0] follow the humidity low bits (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are flags.
   `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
 - **Tail check:** `(d[3] & 0x0F) == 0x0F` required (held for 1778/1778 good packets; corrupted tails often break it).
 - **Humidity smoothing:** a jump greater than ±5% (`HUM_JUMP_MAX`) holds the packet back (`--- hum jump pending`, nothing

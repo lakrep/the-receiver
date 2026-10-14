@@ -5,9 +5,8 @@ temperature and humidity sensor**. Decodes the sensor's OOK radio packets with a
 **RX470C-V01** receiver module and publishes them over **MQTT** with automatic
 **Home Assistant** discovery. No SDR dongle or `rtl_433` needed.
 
-Decodes temperature, humidity and channel from a Geevon TX19 (FCC ID: 2AM88-TX19)
-transmitter using an **RX470C-V01** superheterodyne receiver module and a
-**NodeMCU D1 Mini (ESP-12F)**.
+Target transmitter: Geevon TX19 (FCC ID: 2AM88-TX19), receiver module RX470C-V01
+(superheterodyne), board NodeMCU D1 Mini (ESP-12F). Decoded: temperature, humidity, channel.
 
 Features: 40-bit TX19 (no LCD) packet decoder, sensor ID lock, WiFi/MQTT/NTP setup
 through a web page, noise and humidity-jump filtering, Arduino IDE sketch.
@@ -30,14 +29,14 @@ through a web page, noise and humidity-jump filtering, Arduino IDE sketch.
 
 **Important:** The receiver outputs 5V logic. A voltage divider (10 kΩ + 22 kΩ)
 is required between D0 and D2 to bring the signal within the ESP8266's 3.3V
-tolerance (resulting in ~3.44V at idle, safely under the 3.6V absolute maximum).
+tolerance (resulting in ~3.44V at logic high, safely under the 3.6V absolute maximum).
 
 ```
-RX470 D0 ──┬── 10 kΩ ──┬── D2 (GPIO4)
-           │           │
-           │          22 kΩ
-           │           │
-          GND         GND
+RX470 D0 ──── 10 kΩ ──┬── D2 (GPIO4)
+                      │
+                     22 kΩ
+                      │
+                     GND
 ```
 
 ### Antenna
@@ -63,16 +62,38 @@ Reverse-engineered from live captures. The sensor (Geevon TX19 **no LCD**) uses
 
 ```
 Byte 0    Byte 1    Byte 2    Byte 3    Byte 4
-IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
+hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 ```
 
-| Field       | Position     | Size | Description |
-|-------------|-------------|------|-------------|
-| ID          | d[0]–d[1]   | 16   | Sensor ID; only `id & 0x1FC0` is stable (top 3 bits of d[0] drift: 1D99, 3D99 … FD99 are the same sensor) |
-| Channel     | d[1] >> 4   | 4    | `8→CH1`, `9→CH2`, `A→CH3` |
-| Battery     | d[1] & 0x08 | 1    | 0 = OK                     |
-| Temperature | d[2]..d[3]  | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
-| Humidity    | d[4]         | 8    | Relative humidity %        |
+| Field       | Position       | Size | Description |
+|-------------|----------------|------|-------------|
+| `hhh`       | d[0] >> 5      | 3    | Copy of the 3 low bits of humidity (`d[4] & 7`), see *Integrity check* below. **Not** part of the ID |
+| ID          | d[0] & 0x1F    | 5    | Sensor ID (`0x1D` for the author's sensor). The firmware compares `id & 0x1FC0`, which adds the two constant top bits of the channel nibble |
+| Channel     | d[1] >> 4      | 4    | `8→CH1`, `9→CH2`, `A→CH3` (the decoder accepts CH2 only) |
+| Flags       | d[1] & 0x0F    | 4    | Observed `0x9` in 99.9 % of packets, `0x1` in 2 of 1796. Bit 3 may be the battery flag, meaning unconfirmed; the decoder ignores it |
+| Temperature | d[2]..d[3]     | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
+| Constant    | d[3] & 0x0F    | 4    | Always `0xF` in good packets (used as a tail check) |
+| Humidity    | d[4]           | 8    | Relative humidity %        |
+
+#### Integrity check: `d[0] >> 5 == d[4] & 7`
+
+The 40-bit packet has no checksum, but its first 3 bits repeat the last 3 bits of the
+humidity byte: `(d[0] >> 5) == (d[4] & 7)`. Example: humidity 77 % = `0x4D`, low bits `101`
+→ `d[0] = 0xBD` (`101 11101`); 78 % → `0xDD`, 79 % → `0xFD`.
+
+Why this was found: the first byte of the same sensor looked like it changed all the time
+(`1D 3D 5D 7D 9D BD DD FD` followed by `99`). Only the low 5 bits (`0x1D`) are the ID; the top
+3 bits follow the humidity, changing exactly when the humidity changes.
+
+Evidence from two captures (41 h and 2.2 h, 1872 packets): the rule holds in 1819 packets
+(97.2 %); random bits would match in 12.5 %. The ~3 % that fail are corrupted packets:
+14 of the 18 packets stopped by the humidity-jump filter fail it, and 35 packets that were
+accepted also failed it, so their humidity could be off by up to 7 %. Packets in a real
+weather change (a storm: humidity 71 → 80 %) satisfy the rule.
+
+**Status:** documented, but not yet enforced by the firmware. Enforcing it would reject
+about 3-5 % of packets (the sensor transmits every ~67 s, and about 17 % are already lost
+to reception) in exchange for keeping corrupted humidity values out of MQTT.
 
 **Decoding:**
 ```c
@@ -83,7 +104,7 @@ hum     = d[4];                                       // byte 4 only
 
 **Scanner behaviour:**
 - Iterates all bit offsets and both inversions (inv=0, inv=1)
-- Filters for CH2 only
+- Filters for CH2 only; accepts temperature -30…60 °C and humidity ≤ 100 %
 - Uses 12-bit temperature formula (no alternative)
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
@@ -91,6 +112,7 @@ hum     = d[4];                                       // byte 4 only
   only packets whose `id & 0x1FC0` equals it are accepted — all others are silently discarded.
   The value is masked with `0x1FC0` when saved and when loaded, so `9D99` and `1D80` are equivalent.
 - **Tail check:** `d[3] & 0x0F` must be `0xF` (true for every good packet in a 41 h capture).
+- **Not checked yet:** `d[0] >> 5 == d[4] & 7` (see *Integrity check* above).
 - **Humidity smoothing:** a packet whose humidity jumps by more than ±5% is held back
   (`--- hum jump pending`) and not published. If the next packet agrees with it
   (humidity ±2%, temperature ±1 °C, within 5 minutes) it is accepted
@@ -121,12 +143,18 @@ hum     = d[4];                                       // byte 4 only
    - Anything else → invalid
 
 3. **40-bit scan** — every possible offset and inversion is tested. Candidates
-   are validated by channel nibble (must be 8/9/A) and temperature range.
+   are validated by channel (must be CH2, nibble `9`), tail nibble `0xF`, the
+   sensor ID filter (if set), temperature range (-30…60 °C) and humidity (≤ 100 %).
 
-4. **Best-match** — among all CH2 candidates, the one with temperature closest
+4. **Best-match** — among all candidates, the one with temperature closest
    to 29 °C is selected, with bonuses for matching last known sensor ID and
-   bit offset (prevents drift to neighbour sensors on the same channel).
-   When a hard `sensorId` is configured, only matching candidates are considered.
+   bit offset and a penalty for humidity > 30 % (all of this biases against a
+   neighbour sensor on the same channel). A candidate with the last known ID within
+   ±5 °C of the last temperature is preferred. When a hard `sensorId` is configured,
+   only matching candidates are considered.
+
+5. **Smoothing** — humidity-jump confirmation (see *Scanner behaviour*), then the
+   value is stored and published.
 
 ## Usage
 
@@ -134,8 +162,18 @@ hum     = d[4];                                       // byte 4 only
 
 1. Open `the-receiver.ino` in Arduino IDE
 2. Select board: **NodeMCU 1.0 (ESP-12E Module)**
-3. Install libraries: **PubSubClient** by Nick O'Leary
+3. Install the **ESP8266** board package and the library **PubSubClient** by Nick O'Leary
 4. Upload to the controller
+
+Command line (`arduino-cli`):
+```
+arduino-cli config add board_manager.additional_urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
+arduino-cli core install esp8266:esp8266
+arduino-cli lib install PubSubClient
+arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 .
+arduino-cli upload  --fqbn esp8266:esp8266:nodemcuv2 -p COM3 .
+```
+Stop `capture_log.py` / the serial monitor before uploading, the port must be free.
 
 ### First Boot — Configuration
 
@@ -166,15 +204,20 @@ If MQTT Discovery is enabled in Home Assistant, two sensors
 **State topic:** `the-receiver/state` (JSON: `{"temperature":24.4,"humidity":57}`)  
 **Availability topic:** `the-receiver/availability` (`online` / `offline`, retained)
 
+The state is published every 2 minutes. After 10 minutes without a valid packet
+the device is marked `offline`.
+
 ### Re-configuration
 
-WiFi fail 10 times in a row → boots into AP config mode automatically.
+WiFi fail 10 times in a row (or WiFi unavailable at boot) → AP config mode automatically.
+The AP is closed after 5 minutes without saving and the device reboots; RF decoding and MQTT
+do not run while the AP is up.
 To force re-configuration, clear EEPROM (e.g. by erasing flash via `esptool.py
 erase_flash` or uploading an empty sketch).
 
 ### Serial Monitor
 
-Output at 115200 baud (USB-only; silent when no serial host):
+Output at 115200 baud:
 
 ```
 === the-receiver ===
@@ -183,16 +226,16 @@ Output at 115200 baud (USB-only; silent when no serial host):
 [00:00:04.406] WiFi OK: 192.168.1.42
 [00:00:04.410] NTP: syncing with pl.pool.ntp.org
 [16:04:05.512] NTP: synced 2026-10-14 16:04:05 (UTC+2:00, Warsaw)
-[15:04:05.514] Sensor ID filter: 0x1D80
-[15:04:05.620] MQTT OK
+[16:04:05.514] Sensor ID filter: 0x1D80
+[16:04:05.620] MQTT OK
 ```
 
 Received RF packets are logged with sensor ID:
 ```
-[14:23:45.123] RF: CH2 id=0x9D99 (stable=0x1D80)  24.5C  57%  raw:9D 99 F0 1F 39
+[14:23:45.123] RF: CH2 id=0x3D99 (stable=0x1D80)  24.5C  57%  raw:3D 99 0F 5F 39
 ```
 
-The built-in blue LED blinks briefly on each valid RF packet.
+The built-in blue LED blinks briefly on each valid RF packet (and every 10 s as a heartbeat).
 
 ### Capturing the log (`capture_log.py`)
 
@@ -217,8 +260,9 @@ python capture_log.py COM3
   keeps appending to the same file. Stop with Ctrl+C.
 - Opening the port usually resets the D1 Mini via DTR, so the log starts with
   the boot messages (`Sensor ID filter: ...`).
-- `output.log` is listed in `.gitignore`.
+- `*.log` files are listed in `.gitignore`.
 
 ## References
 
-- [rtl_433](https://github.com/merbanan/rtl_433) — Geevon TX19 decoder (issue #3438)
+- [rtl_433](https://github.com/merbanan/rtl_433) — decoder for the 72-bit Geevon TX19-1 variant
+  (`src/devices/geevon_tx19.c`, issue #3438 "Decoding Geevon TX19-1"); not the protocol of this device
