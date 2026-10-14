@@ -5,14 +5,18 @@
   40-bit (5 byte), temperature 12-bit (d[2]<<4 | d[3]>>4) * 0.1, humidity d[4],
   channel (d[1]>>4) - 7 (8=CH1, 9=CH2, A=CH3), battery d[1] bit 3.
 
-  First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT
-  Subsequent boots: read from EEPROM, connect WiFi → MQTT → HA Discovery
+  First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT + NTP
+  Subsequent boots: read from EEPROM, connect WiFi → NTP sync → print sensor ID →
+  MQTT → HA Discovery → start RF decoding. NTP is re-synced every 3 hours.
+  Requires ESP8266 Arduino core >= 2.7 (configTime with TZ string).
 */
 
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <PubSubClient.h>
+#include <time.h>
+#include <sys/time.h>
 
 // ============================================================
 // Pin definitions
@@ -42,6 +46,15 @@
 #define ID_MASK       0x1FC0
 
 // ============================================================
+// NTP / time zone
+// ============================================================
+#define NTP_DEFAULT_SERVER  "pl.pool.ntp.org"
+#define NTP_DEFAULT_TZ      "CET-1CEST,M3.5.0,M10.5.0/3"  // Warsaw, with DST
+#define NTP_SYNC_TIMEOUT    15000                         // ms to wait for the first sync
+#define NTP_RESYNC_MS       (3UL * 60 * 60 * 1000)        // periodic re-sync
+#define MIN_VALID_EPOCH     1700000000                    // anything below = clock not set
+
+// ============================================================
 // EEPROM configuration
 // ============================================================
 #define EEPROM_SIZE   512
@@ -56,6 +69,9 @@ struct Storage {
   char mqttUser[32];
   char mqttPass[32];
   uint16_t sensorId;
+  char ntpServer[40];     // empty = NTP_DEFAULT_SERVER
+  uint8_t tzCustom;       // 1 = use gmtOffsetMin, otherwise NTP_DEFAULT_TZ (Warsaw)
+  int16_t gmtOffsetMin;   // minutes east of UTC, valid only when tzCustom == 1
 };
 
 // ============================================================
@@ -108,6 +124,14 @@ void IRAM_ATTR handleInterrupt() {
 // ============================================================
 // EEPROM helpers
 // ============================================================
+// keep only hostname characters; an invalid or unwritten value becomes "" (= default server)
+void normalizeNtpServer() {
+  cfg.ntpServer[sizeof(cfg.ntpServer) - 1] = 0;
+  for (const char *c = cfg.ntpServer; *c; c++) {
+    if (!isalnum((uint8_t)*c) && *c != '.' && *c != '-') { cfg.ntpServer[0] = 0; break; }
+  }
+}
+
 void loadConfig() {
   EEPROM.begin(EEPROM_SIZE);
   uint8_t *p = (uint8_t *)&cfg;
@@ -115,6 +139,13 @@ void loadConfig() {
     p[i] = EEPROM.read(i);
   EEPROM.end();
   configured = (cfg.magic == CFG_MAGIC);
+
+  // fields added later read as 0xFF.. on EEPROM saved by older firmware
+  normalizeNtpServer();
+  if (cfg.tzCustom != 1 || cfg.gmtOffsetMin < -720 || cfg.gmtOffsetMin > 840) {
+    cfg.tzCustom = 0;
+    cfg.gmtOffsetMin = 0;
+  }
 }
 
 void saveConfig() {
@@ -126,6 +157,55 @@ void saveConfig() {
   EEPROM.commit();
   EEPROM.end();
   configured = true;
+}
+
+// ============================================================
+// NTP time sync
+// ============================================================
+bool timeIsValid() {
+  return time(nullptr) > MIN_VALID_EPOCH;
+}
+
+// lwIP SNTP calls this to schedule its periodic re-sync (default is 1 hour)
+extern "C" uint32_t sntp_update_delay_MS_rfc_not_less_than_15000() {
+  return NTP_RESYNC_MS;
+}
+
+void syncTime() {
+  const char *server = cfg.ntpServer[0] ? cfg.ntpServer : NTP_DEFAULT_SERVER;
+  char tz[24];
+  if (cfg.tzCustom) {
+    // POSIX TZ sign is inverted: UTC-3:00 means 3 hours east of UTC
+    int m = cfg.gmtOffsetMin;
+    snprintf(tz, sizeof(tz), "UTC%s%d:%02d", m >= 0 ? "-" : "+", abs(m) / 60, abs(m) % 60);
+  } else {
+    strlcpy(tz, NTP_DEFAULT_TZ, sizeof(tz));
+  }
+
+  printTimestamp();
+  SERIAL_PRINT(print(F("NTP: syncing with ")));
+  SERIAL_PRINT(print(server));
+  SERIAL_PRINT(print(F(", TZ ")));
+  SERIAL_PRINT(println(tz));
+
+  configTime(tz, server);
+  unsigned long start = millis();
+  while (!timeIsValid() && millis() - start < NTP_SYNC_TIMEOUT) {
+    delay(100);
+  }
+
+  printTimestamp();
+  if (timeIsValid()) {
+    time_t now = time(nullptr);
+    struct tm t;
+    localtime_r(&now, &t);
+    char buf[24];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
+    SERIAL_PRINT(print(F("NTP: synced ")));
+    SERIAL_PRINT(println(buf));
+  } else {
+    SERIAL_PRINT(println(F("NTP: sync failed, retrying in background (log shows uptime until then)")));
+  }
 }
 
 // ============================================================
@@ -240,6 +320,10 @@ void publishState() {
 void handleRoot() {
   char sid[8];
   snprintf(sid, sizeof(sid), "%X", cfg.sensorId);
+  String gmt;
+  if (cfg.tzCustom) {
+    gmt = (cfg.gmtOffsetMin % 60 == 0) ? String(cfg.gmtOffsetMin / 60) : String(cfg.gmtOffsetMin / 60.0f, 2);
+  }
   String page = F(
     "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>the-receiver Setup</title><style>"
@@ -259,6 +343,12 @@ void handleRoot() {
   page += sid;
   page += F(" placeholder='e.g. 1D80'>"
     "<small>Use the stable= value from the serial log. Only bits 0x1FC0 are compared.</small>"
+    "<label>NTP server (empty = " NTP_DEFAULT_SERVER ")</label><input name=ntp value='");
+  page += cfg.ntpServer;
+  page += F("' placeholder='" NTP_DEFAULT_SERVER "'>"
+    "<label>GMT offset, hours (empty = Warsaw, CET/CEST)</label><input name=gmt value='");
+  page += gmt;
+  page += F("' placeholder='e.g. 1, -5, 5.5'>"
     "<br><br><input type=submit value='Save & Reboot' style='background:#4CAF50;color:#fff;border:0;padding:12px;font-size:16px'>"
     "</form></body></html>");
   http.send(200, "text/html", page);
@@ -273,6 +363,26 @@ void handleSave() {
   strlcpy(cfg.mqttUser, http.arg("mu").c_str(), sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPass, http.arg("mpw").c_str(), sizeof(cfg.mqttPass));
   cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16) & ID_MASK;
+
+  String ntp = http.arg("ntp");
+  ntp.trim();
+  strlcpy(cfg.ntpServer, ntp.c_str(), sizeof(cfg.ntpServer));
+  normalizeNtpServer();
+
+  // empty or unparsable offset = default Warsaw time with DST
+  String gmt = http.arg("gmt");
+  gmt.trim();
+  gmt.replace(',', '.');
+  cfg.tzCustom = 0;
+  cfg.gmtOffsetMin = 0;
+  if (gmt.length()) {
+    char *end;
+    double h = strtod(gmt.c_str(), &end);
+    if (end != gmt.c_str() && *end == 0 && h >= -12 && h <= 14) {
+      cfg.tzCustom = 1;
+      cfg.gmtOffsetMin = (int16_t)(h * 60 + (h < 0 ? -0.5 : 0.5));
+    }
+  }
   saveConfig();
   http.send(200, "text/html", F("<html><body><h2>Saved! Rebooting...</h2></body></html>"));
   delay(500);
@@ -461,11 +571,23 @@ void decodeRF() {
 
 void printTimestamp() {
   if (silent) return;
-  unsigned long t = millis();
-  unsigned long h = t / 3600000;
-  unsigned long m = (t % 3600000) / 60000;
-  unsigned long s = (t % 60000) / 1000;
-  unsigned long ms = t % 1000;
+  unsigned long h, m, s, ms;
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  if (tv.tv_sec > MIN_VALID_EPOCH) {
+    // NTP-synced local (Warsaw by default) wall clock
+    struct tm t;
+    localtime_r(&tv.tv_sec, &t);
+    h = t.tm_hour; m = t.tm_min; s = t.tm_sec;
+    ms = tv.tv_usec / 1000;
+  } else {
+    // not synced yet: uptime
+    unsigned long up = millis();
+    h = up / 3600000;
+    m = (up % 3600000) / 60000;
+    s = (up % 60000) / 1000;
+    ms = up % 1000;
+  }
   Serial.print(F("["));
   if (h < 10) Serial.print('0');
   Serial.print(h);
@@ -503,6 +625,14 @@ void setup() {
   if (cfg.sensorId == 0xFFFF) cfg.sensorId = 0;
   cfg.sensorId &= ID_MASK;  // values saved before masking (e.g. 9D99) become 1D80
 
+  // order: WiFi -> NTP sync -> sensor ID -> MQTT -> RF decoding
+  if (configured) {
+    printTimestamp();
+    SERIAL_PRINT(println(F("Config found in EEPROM")));
+    connectWiFi();
+    if (WiFi.status() == WL_CONNECTED) syncTime();
+  }
+
   printTimestamp();
   if (cfg.sensorId) {
     SERIAL_PRINT(print(F("Sensor ID filter: 0x")));
@@ -511,16 +641,14 @@ void setup() {
     SERIAL_PRINT(println(F("Sensor ID filter: off (auto)")));
   }
 
-  if (configured) {
-    SERIAL_PRINT(println(F("Config found in EEPROM")));
-    connectWiFi();
-    if (WiFi.status() == WL_CONNECTED) {
-      connectMQTT();
-    } else {
-      SERIAL_PRINT(println(F("WiFi failed — starting AP for reconfiguration")));
-      startConfigPortal();
-    }
+  if (configured && WiFi.status() == WL_CONNECTED) {
+    connectMQTT();
+  } else if (configured) {
+    printTimestamp();
+    SERIAL_PRINT(println(F("WiFi failed — starting AP for reconfiguration")));
+    startConfigPortal();
   } else {
+    printTimestamp();
     SERIAL_PRINT(println(F("No config — starting AP")));
     startConfigPortal();
   }

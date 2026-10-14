@@ -138,9 +138,16 @@ On first boot (or after EEPROM reset) the ESP starts an access point:
 4. Optionally, set **Sensor ID** (hex) to lock the receiver to a specific
    sensor — use the `stable=0xXXXX` value from the serial log line `RF: CH2 id=0x... (stable=0x...)`.
    The active filter is printed at boot as `Sensor ID filter: 0x...`. Leave `0` for auto.
-5. Click "Save & Reboot"
+5. Optionally, set the **NTP server** (empty = `pl.pool.ntp.org`) and the **GMT offset** in hours
+   (e.g. `1`, `-5`, `5.5`; empty = Warsaw time, CET/CEST with automatic daylight saving).
+   A fixed GMT offset has no daylight saving.
+6. Click "Save & Reboot"
 
-The device will then connect to your WiFi network and the MQTT broker.
+The device will then connect to your WiFi network, sync the clock over NTP and connect to the MQTT broker.
+
+Startup order: WiFi → NTP sync (up to 15 s) → `Sensor ID filter` line → MQTT → RF decoding starts.
+The clock is re-synced every 3 hours. Log timestamps `[hh:mm:ss.ms]` show local (Warsaw by default)
+time once NTP is synced; until then (or if NTP fails) they show uptime.
 
 ### Home Assistant
 
@@ -162,10 +169,13 @@ Output at 115200 baud (USB-only; silent when no serial host):
 
 ```
 === the-receiver ===
-Config found in EEPROM
-Connecting WiFi to MyNetwork
-WiFi OK: 192.168.1.42
-MQTT OK
+[00:00:00.120] Config found in EEPROM
+[00:00:00.125] Connecting WiFi to MyNetwork
+[00:00:04.406] WiFi OK: 192.168.1.42
+[00:00:04.410] NTP: syncing with pl.pool.ntp.org, TZ CET-1CEST,M3.5.0,M10.5.0/3
+[15:04:05.512] NTP: synced 2026-10-14 15:04:05
+[15:04:05.514] Sensor ID filter: 0x1D80
+[15:04:05.620] MQTT OK
 ```
 
 Received RF packets are logged with sensor ID:

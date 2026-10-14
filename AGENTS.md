@@ -72,10 +72,14 @@ IIIIIIII  IICC?HHH  TTTTTTTT  TTTThhhh  hhhhhhhh
   - Fields: `magic`, `wifiSSID`, `wifiPass`, `mqttHost`, `mqttPort`, `mqttUser`, `mqttPass`, `sensorId`
   - `sensorId` is `0` (auto) by default; when non-zero only packets matching that ID are accepted
 - First boot (or cleared EEPROM): AP mode "the-receiver" → http://192.168.4.1
-- Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto)
+- Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto), NTP server, GMT offset (hours)
+  - `Storage` also has `ntpServer[40]` (empty = `pl.pool.ntp.org`), `tzCustom`, `gmtOffsetMin`; unwritten/invalid values fall back to defaults on load
+  - Empty/unparsable GMT offset → Warsaw TZ `CET-1CEST,M3.5.0,M10.5.0/3` (with DST); a number → fixed offset, POSIX `UTC-h:mm` (sign inverted)
+- Startup order in `setup()`: WiFi → `syncTime()` (waits ≤15 s) → print `Sensor ID filter` → MQTT → `attachInterrupt` (RF polling)
+- NTP re-sync every 3 h via `sntp_update_delay_MS_rfc_not_less_than_15000()` override (`NTP_RESYNC_MS`); needs ESP8266 core ≥ 2.7
 - Serial log shows `RF: CH2 id=0xXXXX (stable=0xYYYY)` — copy the **stable** value into the web form to lock the receiver to one sensor
 - Boot log prints `Sensor ID filter: 0x...` (or `off (auto)`) — check it to confirm the saved value
 - WiFi reconnect: 10s interval, 10 failures → fallback to AP
 - Publish interval: 120s, stale timeout: 600s
 - RF decode runs in interrupt, non-blocking LED timer replaces `delay()`
-- Every output to serial port requires timing in format [hh:mm:ss.ms]
+- Every output to serial port requires timing in format [hh:mm:ss.ms] — local (Warsaw) wall clock once NTP is valid (`time() > MIN_VALID_EPOCH`), uptime before that
