@@ -1,10 +1,16 @@
-# the-receiver
+# the-receiver — Geevon TX19 433 MHz sensor receiver for ESP8266 (MQTT / Home Assistant)
 
-433 MHz weather station receiver for **Geevon TX19** outdoor sensor.
+DIY **ESP8266 (NodeMCU D1 Mini) receiver for the Geevon TX19 433 MHz outdoor
+temperature and humidity sensor**. Decodes the sensor's OOK radio packets with an
+**RX470C-V01** receiver module and publishes them over **MQTT** with automatic
+**Home Assistant** discovery. No SDR dongle or `rtl_433` needed.
 
 Decodes temperature, humidity and channel from a Geevon TX19 (FCC ID: 2AM88-TX19)
 transmitter using an **RX470C-V01** superheterodyne receiver module and a
 **NodeMCU D1 Mini (ESP-12F)**.
+
+Features: 40-bit TX19 (no LCD) packet decoder, sensor ID lock, WiFi/MQTT/NTP setup
+through a web page, noise and humidity-jump filtering, Arduino IDE sketch.
 
 ## Hardware
 
