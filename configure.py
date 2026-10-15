@@ -4,7 +4,7 @@
 Dialog (text window):  python configure.py COM3
 Line prompts:          python configure.py COM3 --text
 Non-interactive:       python configure.py COM3 --wifi-ssid MyNet --wifi-pass secret \\
-                           --mqtt-host 192.168.0.10 --channel 2 --sensor-id 1D80 --yes
+                           --mqtt-host 192.168.0.10 --channel 2 --sensor-id 1D00 --yes
 Requires: pip install pyserial   (Windows dialog also: pip install windows-curses)
 
 The dialog shows the same fields as the AP page with the values stored in the device.

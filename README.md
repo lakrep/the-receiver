@@ -68,9 +68,9 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 | Field       | Position       | Size | Description |
 |-------------|----------------|------|-------------|
 | `hhh`       | d[0] >> 5      | 3    | Copy of the 3 low bits of humidity (`d[4] & 7`), see *Integrity check* below. **Not** part of the ID |
-| ID          | d[0] & 0x1F    | 5    | Sensor ID (`0x1D` for the author's sensor). The firmware compares `id & 0x1FC0`, which adds the two constant top bits of the channel nibble |
+| ID          | d[0] & 0x1F    | 5    | Sensor ID (`0x1D` for the author's sensor). The firmware compares `id & 0x1F00`, i.e. only these 5 bits (`1D00` for the author's sensor) |
 | Channel     | (d[1] >> 4) & 3 | 2   | `0→CH1`, `1→CH2`, `2→CH3` (same bits as rtl_433 TX19-1; the decoder accepts CH2 only) |
-| Bit 7       | d[1] >> 7      | 1    | Always 1 in all captured packets. In rtl_433 TX19-1 this is the battery bit (1 = low); polarity for this sensor unconfirmed |
+| Bit 7       | d[1] >> 7      | 1    | Battery flag. Always 1 in all captured packets. Firmware assumes **0 = battery low** (in rtl_433 TX19-1 this bit is the battery bit with the opposite polarity, 1 = low, which would mean "always low" here); the assumption is unverified until a battery runs down |
 | Bit 6       | d[1] >> 6 & 1  | 1    | Always 0 in all captured packets |
 | Flags       | d[1] & 0x0F    | 4    | Observed `0x9` in 99.9 % of packets, `0x1` in 2 of 1796; meaning unknown, the decoder ignores it |
 | Temperature | d[2]..d[3]     | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
@@ -112,8 +112,8 @@ hum     = d[4];                                       // byte 4 only
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
 - **Hard sensor ID filter:** if `sensorId` is configured (non-zero in EEPROM),
-  only packets whose `id & 0x1FC0` equals it are accepted — all others are silently discarded.
-  The value is masked with `0x1FC0` when saved and when loaded, so `9D99` and `1D80` are equivalent.
+  only packets whose `id & 0x1F00` equals it are accepted — all others are silently discarded.
+  The value is masked with `0x1F00` when saved and when loaded, so `9D99`, `1D80` and `1D00` are equivalent (all become `1D00`). `d[1]` is not part of the filter, otherwise a packet with the battery bit cleared would be dropped.
 - **Tail check:** `d[3] & 0x0F` must be `0xF` (true for every good packet in a 41 h capture).
 - **Integrity check:** `d[0] >> 5` must equal `d[4] & 7` (see *Integrity check* above).
 - **Humidity smoothing:** a packet whose humidity jumps by more than ±5% is held back
@@ -210,7 +210,7 @@ arduino-cli upload --fqbn esp8266:esp8266:nodemcuv2 -p $PORT .
 
 # configure over serial (interactive, or with options)
 python configure.py $PORT
-python configure.py $PORT --channel 2 --sensor-id 1D80 --yes
+python configure.py $PORT --channel 2 --sensor-id 1D00 --yes
 
 # capture the log to output.log
 python capture_log.py $PORT
@@ -307,13 +307,13 @@ Non-interactive mode changes only the options that are given (no dialog):
 
 ```
 python configure.py COM3 --wifi-ssid MyNet --wifi-pass secret --mqtt-host 192.168.0.10 \
-    --channel 2 --sensor-id 1D80 --yes
+    --channel 2 --sensor-id 1D00 --yes
 ```
 
 macOS:
 ```
 python configure.py /dev/cu.usbserial-110 --wifi-ssid MyNet --wifi-pass secret \
-    --mqtt-host 192.168.0.10 --channel 2 --sensor-id 1D80 --yes
+    --mqtt-host 192.168.0.10 --channel 2 --sensor-id 1D00 --yes
 
 # change a single field, keep everything else
 python configure.py /dev/cu.usbserial-110 --channel 3 --yes
@@ -348,10 +348,10 @@ Notes:
 
 ### Home Assistant
 
-If MQTT Discovery is enabled in Home Assistant, two sensors
-(temperature and humidity) appear automatically under device **the-receiver**.
+If MQTT Discovery is enabled in Home Assistant, three entities
+(temperature, humidity and a *Battery low* binary sensor) appear automatically under device **the-receiver**.
 
-**State topic:** `the-receiver/state` (JSON: `{"temperature":24.4,"humidity":57}`)  
+**State topic:** `the-receiver/state` (JSON: `{"temperature":24.4,"humidity":57,"battery_low":false}`)  
 **Availability topic:** `the-receiver/availability` (`online` / `offline`, retained)
 
 The state is published every 2 minutes. After 10 minutes without a valid packet
@@ -377,13 +377,13 @@ Output at 115200 baud:
 [00:00:04.406] WiFi OK: 192.168.1.42
 [00:00:04.410] NTP: syncing with pl.pool.ntp.org
 [16:04:05.512] NTP: synced 2026-10-14 16:04:05 (UTC+2:00, Warsaw)
-[16:04:05.514] Sensor ID filter: 0x1D80
+[16:04:05.514] Sensor ID filter: 0x1D00
 [16:04:05.620] MQTT OK
 ```
 
 Received RF packets are logged with sensor ID:
 ```
-[14:23:45.123] RF: CH2 id=0x3D99 (stable=0x1D80)  24.5C  57%  raw:3D 99 0F 5F 39
+[14:23:45.123] RF: CH2 id=0x3D99 (stable=0x1D00)  24.5C  57%  batt:OK  raw:3D 99 0F 5F 39
 ```
 
 The built-in blue LED blinks briefly on each valid RF packet (and every 10 s as a heartbeat).

@@ -21,7 +21,7 @@ Byte 0    Byte 1    Byte 2    Byte 3    Byte 4
 hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 ```
 - **Byte 0:** bits 7-5 = copy of humidity low 3 bits (`d[0]>>5 == d[4]&7`, 97.2 % of 1872 packets; NOT part of the ID — corrupted packets break it; **enforced**, mismatch → packet discarded); bits 4-0 = ID (0x1D)
-- **Byte 1:** bits 5-4 = channel-1 (0=CH1, 1=CH2, 2=CH3, as in rtl_433 TX19-1); bit 7 always 1 and bit 6 always 0 in captures (rtl_433: bit 7 = battery, 1 = low; unconfirmed here); low nibble = flags (observed 0x9, rarely 0x1)
+- **Byte 1:** bits 5-4 = channel-1 (0=CH1, 1=CH2, 2=CH3, as in rtl_433 TX19-1); bit 7 = battery flag, assumed 0 = LOW (always 1 in captures, never seen low; rtl_433 TX19-1 has the opposite polarity), bit 6 always 0; low nibble = flags (observed 0x9, rarely 0x1)
 - **Byte 3 low nibble:** always 0xF (tail check)
 - **Byte 2-3:** Temperature 12-bit — `((d[2]<<4 | d[3]>>4)) * 0.1°C` (NO -500 offset)
 - **Byte 4:** Humidity %
@@ -34,8 +34,8 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 - Scanner iterates offsets & inversions, accepts only the configured channel (`cfg.channel`, default CH2), tracks ID + offset for lock-on.
 - **Channel filter:** `cfg.channel` (1..3, default `DEFAULT_CHANNEL` = 2) is chosen in the web form; packets of other channels are discarded. Invalid/unwritten EEPROM value (0xFF on old configs) → CH2.
 - **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets with `(id & ID_MASK) == cfg.sensorId` are accepted — all others are silently discarded.
-  `ID_MASK = 0x1FC0`: top 3 bits of d[0] follow the humidity low bits (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are flags.
-  `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
+  `ID_MASK = 0x1F00`: only d[0] low 5 bits; top 3 bits of d[0] follow the humidity low bits (same sensor shows 1D99/3D99/…/FD99), d[1] carries channel/battery/flags and must stay out of the mask (a low-battery packet would be dropped).
+  `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D00` (so does `1D80`).
 - **Integrity check:** `(d[0] >> 5) == (d[4] & 7)` required (97 % of packets; the rest are corrupted, e.g. `BD 99 06 6F 5B` = false 91 %).
 - **Tail check:** `(d[3] & 0x0F) == 0x0F` required (held for 1778/1778 good packets; corrupted tails often break it).
 - **Humidity smoothing:** a jump greater than ±5% (`HUM_JUMP_MAX`) holds the packet back (`--- hum jump pending`, nothing
@@ -56,7 +56,7 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 - 72-bit (9 byte), bits inverted, LFSR-8 checksum. See `rtl_433/src/devices/geevon_tx19.c`.
 
 ## MQTT
-- State topic: `the-receiver/state` → `{"temperature":24.4,"humidity":57}` (no retain)
+- State topic: `the-receiver/state` → `{"temperature":24.4,"humidity":57,"battery_low":false}` (no retain)
 - Availability: `the-receiver/availability` → `online`/`offline` (retained)
 - **Must call `mqtt.setBufferSize(512)`** in `connectMQTT()` — discovery payloads are ~370B, PubSubClient default is 256B
 - **Must call `mqtt.setKeepAlive(60)`** — 15s default causes timeout on ESP8266
@@ -64,7 +64,8 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 ## Home Assistant Discovery
 - Topic: `homeassistant/sensor/receiver-{temp,hum}-{chipId}/config`
 - Payload includes `dev_cla`, `unit_of_meas`, `val_tpl`, device grouping
-- Published with `retain=true` on MQTT connect
+- Published with `retain=true` on MQTT connect. Third entity: `homeassistant/binary_sensor/receiver-batt-{chipId}/config`, `dev_cla: battery` (ON = low), `val_tpl` maps `battery_low`.
+- **Battery:** `battery_low = (d[1] & 0x80) == 0` (`BATTERY_BIT`); the reported state changes only after `BATTERY_CONFIRM` (2) consecutive accepted packets agree (`--- battery LOW/OK` in the log). RF log line has `batt:OK|LOW`.
 
 ## ESP8266 Quirks
 - Call `yield()` at top of `loop()` for WiFi stack

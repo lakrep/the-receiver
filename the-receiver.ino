@@ -40,10 +40,15 @@
 #define PACKET_BITS   40
 #define PACKET_BYTES  5
 
-// Sensor ID = d[0]<<8 | d[1]. Only bits 12..6 (d[0] low 5 bits + d[1] bits 7-6) are stable:
+// Sensor ID = d[0]<<8 | d[1]. Only the low 5 bits of d[0] (bits 12..8) identify the sensor:
 // the top 3 bits of d[0] drift between packets (seen 1D/3D/5D/7D/9D/BD/DD/FD for one sensor),
-// d[1] low bits carry flags. Config and comparisons always use id & ID_MASK.
-#define ID_MASK       0x1FC0
+// d[1] carries channel and flags (bit 7 = battery), so it must not take part in the filter.
+// Config and comparisons always use id & ID_MASK.
+#define ID_MASK       0x1F00
+// battery flag = d[1] bit 7, 0 = low (assumed, never seen low yet); a change must be seen in
+// this many consecutive accepted packets before it is reported
+#define BATTERY_BIT   0x80
+#define BATTERY_CONFIRM 2
 
 // ============================================================
 // NTP / time zone
@@ -106,6 +111,7 @@ unsigned long configStart = 0;
 float lastTempC = 0;
 uint8_t lastHum = 0;
 bool hasData = false;
+bool batteryLow = false;
 unsigned long ledOffTime = 0;
 
 ESP8266WebServer http(80);
@@ -335,12 +341,26 @@ void publishDiscovery() {
     "\"name\":\"the-receiver\"}}",
     chipId, chipId);
   mqtt.publish(topic, buf, true);
+
+  // battery: ON = low (device class battery)
+  snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/receiver-batt-%s/config", chipId);
+  snprintf(buf, sizeof(buf),
+    "{\"name\":\"Battery low\",\"stat_t\":\"the-receiver/state\","
+    "\"dev_cla\":\"battery\","
+    "\"uniq_id\":\"receiver-batt-%s\","
+    "\"avty_t\":\"the-receiver/availability\","
+    "\"val_tpl\":\"{{ 'ON' if value_json.battery_low else 'OFF' }}\","
+    "\"device\":{\"identifiers\":[\"the-receiver-%s\"],"
+    "\"name\":\"the-receiver\"}}",
+    chipId, chipId);
+  mqtt.publish(topic, buf, true);
 }
 
 void publishState() {
   if (!mqtt.connected()) return;
-  char buf[64];
-  snprintf(buf, sizeof(buf), "{\"temperature\":%.1f,\"humidity\":%u}", lastTempC, lastHum);
+  char buf[96];
+  snprintf(buf, sizeof(buf), "{\"temperature\":%.1f,\"humidity\":%u,\"battery_low\":%s}",
+           lastTempC, lastHum, batteryLow ? "true" : "false");
   mqtt.publish("the-receiver/state", buf, false);
   printTimestamp();
   SERIAL_PRINT(print(F("MQTT publish: ")));
@@ -443,8 +463,8 @@ void handleRoot() {
     "<label>MQTT Password</label><input name=mpw type=password>"
     "<label>Sensor ID (hex, 0 = auto)</label><input name=sid value=");
   page += sid;
-  page += F(" placeholder='e.g. 1D80'>"
-    "<small>Use the stable= value from the serial log. Only bits 0x1FC0 are compared.</small>"
+  page += F(" placeholder='e.g. 1D00'>"
+    "<small>Use the stable= value from the serial log. Only bits 0x1F00 are compared.</small>"
     "<label>Sensor channel</label><select name=ch style='width:100%;padding:8px;margin:6px 0'>");
   for (int c = 1; c <= 3; c++) {
     page += F("<option value=");
@@ -636,7 +656,9 @@ void decodeRF() {
   SERIAL_PRINT(print(bestTemp, 1));
   SERIAL_PRINT(print(F("C  ")));
   SERIAL_PRINT(print(bestHum));
-  SERIAL_PRINT(print(F("%  raw:")));
+  SERIAL_PRINT(print(F("%  batt:")));
+  SERIAL_PRINT(print((bestD[1] & BATTERY_BIT) ? F("OK") : F("LOW")));
+  SERIAL_PRINT(print(F("  raw:")));
   for (int i = 0; i < PACKET_BYTES; i++) { if (bestD[i] < 0x10) SERIAL_PRINT(print("0")); SERIAL_PRINT(print(bestD[i], HEX)); SERIAL_PRINT(print(" ")); }
   SERIAL_PRINT(println());
 
@@ -677,6 +699,18 @@ void decodeRF() {
   lastHum = bestHum;
   lastPacket = millis();
   hasData = true;
+
+  // battery flag with debounce: d[1] is not covered by any check, so one packet is not enough
+  static uint8_t battSeen = 0;
+  bool lowNow = (bestD[1] & BATTERY_BIT) == 0;
+  if (lowNow == batteryLow) {
+    battSeen = 0;
+  } else if (++battSeen >= BATTERY_CONFIRM) {
+    batteryLow = lowNow;
+    battSeen = 0;
+    printTimestamp();
+    SERIAL_PRINT(println(batteryLow ? F("--- battery LOW") : F("--- battery OK")));
+  }
 
   // Blink LED
   digitalWrite(LED_PIN, LOW);
@@ -834,7 +868,7 @@ void setup() {
 
   // fix uninitialized sensorId (unwritten EEPROM reads 0xFFFF)
   if (cfg.sensorId == 0xFFFF) cfg.sensorId = 0;
-  cfg.sensorId &= ID_MASK;  // values saved before masking (e.g. 9D99) become 1D80
+  cfg.sensorId &= ID_MASK;  // values saved with older masks (9D99, 1D80) become 1D00
 
   // order: WiFi -> NTP sync -> sensor ID -> MQTT -> RF decoding
   if (configured) {
