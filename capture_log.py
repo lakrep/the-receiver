@@ -12,7 +12,11 @@ import argparse
 import sys
 import time
 
-import serial
+try:
+    import serial
+except ImportError:
+    sys.exit("pyserial is not installed. Install it (macOS: inside a virtual environment):\n"
+             "  python3 -m venv .venv && source .venv/bin/activate && pip install pyserial")
 
 RETRY_DELAY = 2.0
 

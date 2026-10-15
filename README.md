@@ -178,6 +178,49 @@ arduino-cli upload  --fqbn esp8266:esp8266:nodemcuv2 -p COM3 .
 ```
 Stop `capture_log.py` / the serial monitor before uploading, the port must be free.
 
+### Serial port names and macOS commands
+
+The examples use the Windows port `COM3`. On macOS (and Linux) use the device file instead:
+
+| OS | Port | How to find it |
+|----|------|----------------|
+| Windows | `COM3` | Device Manager → Ports |
+| macOS | `/dev/cu.usbserial-110` (or `/dev/cu.wchusbserial*`, `/dev/cu.usbmodem*`) | `ls /dev/cu.*` or `arduino-cli board list` |
+| Linux | `/dev/ttyUSB0` | `ls /dev/ttyUSB*` (the user must be in the `dialout` group) |
+
+On macOS use the `cu.` device, not `tty.`; the number in the name depends on the USB port and
+adapter. The D1 Mini's CH340 usually needs no driver on current macOS.
+
+Python tools (`capture_log.py`, `configure.py`): Homebrew's Python refuses a global
+`pip install` ("externally-managed-environment"), so use a virtual environment once:
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pyserial
+```
+(`.venv/` is a local folder, already listed in `.gitignore`. Run `source .venv/bin/activate` again in each new terminal.)
+
+macOS variants of the commands:
+```
+PORT=/dev/cu.usbserial-110
+
+# flash
+arduino-cli upload --fqbn esp8266:esp8266:nodemcuv2 -p $PORT .
+
+# configure over serial (interactive, or with options)
+python configure.py $PORT
+python configure.py $PORT --channel 2 --sensor-id 1D80 --yes
+
+# capture the log to output.log
+python capture_log.py $PORT
+
+# just watch the log (exit: Ctrl+A then K in screen)
+screen $PORT 115200
+```
+Only one program can hold the port: quit `screen` (or stop `capture_log.py`) before flashing
+or running `configure.py`.
+
 ### First Boot — Configuration
 
 On first boot (or after EEPROM reset) the ESP starts an access point:
@@ -201,6 +244,108 @@ Startup order: WiFi → NTP sync (up to 15 s) → `Sensor ID filter` line → MQ
 The clock is re-synced every 3 hours. Log timestamps `[hh:mm:ss.ms]` show local (Warsaw by default)
 time once NTP is synced; until then (or if NTP fails) they show uptime.
 
+### Configuration over serial (`configure.py`)
+
+`configure.py` does the same as the AP page, without WiFi: it connects to the serial port,
+shows the stored values, lets you edit them in a text dialog and, on SAVE, makes the firmware
+write them to EEPROM and reboot. It works on a fresh board and on a configured one, at any time
+(not only in AP mode).
+
+Windows:
+```
+pip install pyserial windows-curses
+python configure.py COM3
+```
+
+macOS (create the virtual environment once, see *Serial port names and macOS commands*):
+```
+python3 -m venv .venv && source .venv/bin/activate && pip install pyserial   # first time only
+source .venv/bin/activate                                                    # every new terminal
+python configure.py /dev/cu.usbserial-110
+```
+
+The dialog (needs a real terminal at least 60×19; `curses` is built into macOS/Linux Python,
+Windows needs `windows-curses`):
+
+```
+ the-receiver configuration                         /dev/cu.usbserial-110
+ Device: configured   (unsaved changes: 1)
+ ---------------------------------------------------------------------
+ >*WiFi SSID           [MyNet                                         ]
+   WiFi password       [<set>                                         ]
+   MQTT host           [mosquitto.local                               ]
+   ...
+   Sensor channel      [2                                             ]
+   NTP server          [<empty>                                       ]
+   GMT offset, hours   [<empty>                                       ]
+
+   [ SAVE ]  [ EXIT ]
+```
+
+| Key | Action |
+|-----|--------|
+| Up / Down, Tab / Shift+Tab | Move between the fields and the SAVE / EXIT buttons |
+| Enter | Edit the field (or press the selected button); on *Sensor channel* it switches 1→2→3 |
+| Left / Right | In a field: move the cursor (channel: switch). On the buttons: SAVE ↔ EXIT |
+| Enter / Esc while editing | Accept / cancel the edit (Ctrl+U clears the line, Home/End/Del work) |
+| Del or Backspace | Clear the selected field (empty = default; for passwords: remove the stored one) |
+| R | Revert the selected field to the stored value |
+| F2 | Save (same as the SAVE button) |
+| Esc, F10 | Exit (same as the EXIT button); asks first when there are unsaved changes |
+
+- Changed fields are marked with `*`. Passwords are never sent back by the device: the field
+  shows `<set>`, a new password is typed from scratch and shown as `***`; Enter on an empty
+  password keeps the stored one.
+- WiFi SSID and MQTT host are required. The device checks every value on SAVE (e.g. channel 5
+  or a bad hex ID is rejected); the dialog then jumps to the offending field and shows the reason.
+- Nothing is written before SAVE. After a successful SAVE the dialog closes, the device
+  reboots and its boot log is shown for 15 s. EXIT leaves the device untouched.
+- `--text` selects plain line prompts instead (Enter keeps the current value, `-` clears it).
+  The script also falls back to them when `curses` is missing or the output is not a terminal.
+
+Non-interactive mode changes only the options that are given (no dialog):
+
+```
+python configure.py COM3 --wifi-ssid MyNet --wifi-pass secret --mqtt-host 192.168.0.10 \
+    --channel 2 --sensor-id 1D80 --yes
+```
+
+macOS:
+```
+python configure.py /dev/cu.usbserial-110 --wifi-ssid MyNet --wifi-pass secret \
+    --mqtt-host 192.168.0.10 --channel 2 --sensor-id 1D80 --yes
+
+# change a single field, keep everything else
+python configure.py /dev/cu.usbserial-110 --channel 3 --yes
+
+# clear the optional fields (NTP server and GMT offset back to defaults)
+python configure.py /dev/cu.usbserial-110 --ntp "" --gmt "" --yes
+```
+In zsh/bash wrap a password containing `$ ! & ; "` or spaces in single quotes,
+e.g. `--wifi-pass 'p@ss$word'`; a password with a single quote itself is easier to enter in the
+dialog. `$PORT` works too (`PORT=/dev/cu.usbserial-110`).
+
+| Option | Field |
+|--------|-------|
+| `--wifi-ssid`, `--wifi-pass` | WiFi credentials |
+| `--mqtt-host`, `--mqtt-port`, `--mqtt-user`, `--mqtt-pass` | MQTT broker |
+| `--sensor-id` | Sensor ID, hex, `0` = auto |
+| `--channel` | Sensor channel 1–3 |
+| `--ntp`, `--gmt` | NTP server, GMT offset in hours (`""` = Warsaw with DST) |
+| `--yes` | Save without the final question |
+| `--text` | Line prompts instead of the dialog |
+| `--baud`, `--no-watch` | Baud rate (115200); skip the 15 s boot log shown after saving |
+
+Notes:
+- Opening the port normally resets the board. The firmware answers only from `loop()`, i.e.
+  after WiFi and NTP at startup, so the script pings for up to 90 s.
+- The port can be used by one program at a time: stop `capture_log.py` and the serial monitor first.
+- Passwords given as options are visible in the process list and shell history; use the
+  interactive mode on shared machines.
+- Protocol: text lines starting with `CFG ` (`PING`, `GET`, `SET key=value`, `SAVE`, `CANCEL`);
+  `SET` only stages a value, `SAVE` writes and reboots. Keys: `wifi_ssid wifi_pass mqtt_host
+  mqtt_port mqtt_user mqtt_pass sensor_id channel ntp gmt`. Every reply carries the usual timestamp.
+
 ### Home Assistant
 
 If MQTT Discovery is enabled in Home Assistant, two sensors
@@ -217,7 +362,8 @@ the device is marked `offline`.
 WiFi fail 10 times in a row (or WiFi unavailable at boot) → AP config mode automatically.
 The AP is closed after 5 minutes without saving and the device reboots; RF decoding and MQTT
 do not run while the AP is up.
-To force re-configuration, clear EEPROM (e.g. by erasing flash via `esptool.py
+To change the configuration without the AP, use `configure.py` (see above).
+To reset it completely, clear EEPROM (e.g. by erasing flash via `esptool.py
 erase_flash` or uploading an empty sketch).
 
 ### Serial Monitor

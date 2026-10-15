@@ -348,15 +348,84 @@ void publishState() {
 }
 
 // ============================================================
+// Config fields (shared by the web portal and the serial provisioning)
+// ============================================================
+// Keys: wifi_ssid wifi_pass mqtt_host mqtt_port mqtt_user mqtt_pass sensor_id channel ntp gmt
+// An empty value means "default / cleared". Returns NULL on success, otherwise a short
+// error text and the field is left unchanged.
+static const char *copyStr(char *dst, size_t size, const String &v) {
+  if (v.length() >= size) return "too long";
+  strlcpy(dst, v.c_str(), size);
+  return NULL;
+}
+
+const char *setField(Storage &c, const String &key, String val) {
+  // credentials and user names keep their spaces, everything else is trimmed
+  if (key != "wifi_ssid" && key != "wifi_pass" && key != "mqtt_user" && key != "mqtt_pass") val.trim();
+
+  if (key == "wifi_ssid") return copyStr(c.wifiSSID, sizeof(c.wifiSSID), val);
+  if (key == "wifi_pass") return copyStr(c.wifiPass, sizeof(c.wifiPass), val);
+  if (key == "mqtt_host") return copyStr(c.mqttHost, sizeof(c.mqttHost), val);
+  if (key == "mqtt_user") return copyStr(c.mqttUser, sizeof(c.mqttUser), val);
+  if (key == "mqtt_pass") return copyStr(c.mqttPass, sizeof(c.mqttPass), val);
+
+  if (key == "mqtt_port") {
+    if (!val.length()) { c.mqttPort = 1883; return NULL; }
+    char *end;
+    long port = strtol(val.c_str(), &end, 10);
+    if (*end || port < 1 || port > 65535) return "port must be 1..65535";
+    c.mqttPort = (uint16_t)port;
+    return NULL;
+  }
+  if (key == "sensor_id") {
+    if (!val.length()) { c.sensorId = 0; return NULL; }
+    char *end;
+    long id = strtol(val.c_str(), &end, 16);
+    if (*end || id < 0 || id > 0xFFFF) return "sensor id must be hex";
+    c.sensorId = (uint16_t)id & ID_MASK;
+    return NULL;
+  }
+  if (key == "channel") {
+    if (!val.length()) { c.channel = DEFAULT_CHANNEL; return NULL; }
+    if (val.length() != 1 || val[0] < '1' || val[0] > '3') return "channel must be 1..3";
+    c.channel = val[0] - '0';
+    return NULL;
+  }
+  if (key == "ntp") {
+    if (val.length() >= sizeof(c.ntpServer)) return "too long";
+    for (unsigned int i = 0; i < val.length(); i++) {
+      char ch = val[i];
+      if (!isalnum((uint8_t)ch) && ch != '.' && ch != '-') return "bad NTP server name";
+    }
+    strlcpy(c.ntpServer, val.c_str(), sizeof(c.ntpServer));
+    return NULL;
+  }
+  if (key == "gmt") {
+    // empty = Warsaw time with DST, a number = fixed offset in hours
+    if (!val.length()) { c.tzCustom = 0; c.gmtOffsetMin = 0; return NULL; }
+    val.replace(',', '.');
+    char *end;
+    double h = strtod(val.c_str(), &end);
+    if (end == val.c_str() || *end || h < -12 || h > 14) return "gmt must be -12..14";
+    c.tzCustom = 1;
+    c.gmtOffsetMin = (int16_t)(h * 60 + (h < 0 ? -0.5 : 0.5));
+    return NULL;
+  }
+  return "unknown key";
+}
+
+String gmtString(const Storage &c) {
+  if (!c.tzCustom) return String();
+  return (c.gmtOffsetMin % 60 == 0) ? String(c.gmtOffsetMin / 60) : String(c.gmtOffsetMin / 60.0f, 2);
+}
+
+// ============================================================
 // Web config portal
 // ============================================================
 void handleRoot() {
   char sid[8];
   snprintf(sid, sizeof(sid), "%X", cfg.sensorId);
-  String gmt;
-  if (cfg.tzCustom) {
-    gmt = (cfg.gmtOffsetMin % 60 == 0) ? String(cfg.gmtOffsetMin / 60) : String(cfg.gmtOffsetMin / 60.0f, 2);
-  }
+  String gmt = gmtString(cfg);
   String page = F(
     "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>the-receiver Setup</title><style>"
@@ -398,35 +467,14 @@ void handleRoot() {
 }
 
 void handleSave() {
-  strlcpy(cfg.wifiSSID, http.arg("s").c_str(), sizeof(cfg.wifiSSID));
-  strlcpy(cfg.wifiPass, http.arg("p").c_str(), sizeof(cfg.wifiPass));
-  strlcpy(cfg.mqttHost, http.arg("mh").c_str(), sizeof(cfg.mqttHost));
-  cfg.mqttPort = (uint16_t)http.arg("mp").toInt();
-  if (cfg.mqttPort == 0) cfg.mqttPort = 1883;
-  strlcpy(cfg.mqttUser, http.arg("mu").c_str(), sizeof(cfg.mqttUser));
-  strlcpy(cfg.mqttPass, http.arg("mpw").c_str(), sizeof(cfg.mqttPass));
-  cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16) & ID_MASK;
-  cfg.channel = (uint8_t)http.arg("ch").toInt();
-  if (cfg.channel < 1 || cfg.channel > 3) cfg.channel = DEFAULT_CHANNEL;
-
-  String ntp = http.arg("ntp");
-  ntp.trim();
-  strlcpy(cfg.ntpServer, ntp.c_str(), sizeof(cfg.ntpServer));
-  normalizeNtpServer();
-
-  // empty or unparsable offset = default Warsaw time with DST
-  String gmt = http.arg("gmt");
-  gmt.trim();
-  gmt.replace(',', '.');
-  cfg.tzCustom = 0;
-  cfg.gmtOffsetMin = 0;
-  if (gmt.length()) {
-    char *end;
-    double h = strtod(gmt.c_str(), &end);
-    if (end != gmt.c_str() && *end == 0 && h >= -12 && h <= 14) {
-      cfg.tzCustom = 1;
-      cfg.gmtOffsetMin = (int16_t)(h * 60 + (h < 0 ? -0.5 : 0.5));
-    }
+  static const struct { const char *arg; const char *key; } fields[] = {
+    {"s", "wifi_ssid"}, {"p", "wifi_pass"}, {"mh", "mqtt_host"}, {"mp", "mqtt_port"},
+    {"mu", "mqtt_user"}, {"mpw", "mqtt_pass"}, {"sid", "sensor_id"}, {"ch", "channel"},
+    {"ntp", "ntp"}, {"gmt", "gmt"},
+  };
+  for (unsigned int i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+    // an invalid value falls back to the default (empty value)
+    if (setField(cfg, fields[i].key, http.arg(fields[i].arg))) setField(cfg, fields[i].key, "");
   }
   saveConfig();
   http.send(200, "text/html", F("<html><body><h2>Saved! Rebooting...</h2></body></html>"));
@@ -671,6 +719,103 @@ void printTimestamp() {
 }
 
 // ============================================================
+// Serial provisioning (configure.py): line protocol, every line starts with "CFG "
+//   CFG PING                 -> CFG PONG
+//   CFG GET                  -> CFG VAL key=value ... CFG END (passwords are not sent)
+//   CFG SET key=value        -> CFG OK key | CFG ERR key: reason   (staged, not saved)
+//   CFG SAVE                 -> CFG SAVED, EEPROM written, reboot
+//   CFG CANCEL               -> drop staged values
+// ============================================================
+static Storage pending;
+static bool pendingActive = false;
+
+static void cfgReply(const String &text) {
+  printTimestamp();
+  Serial.print(F("CFG "));
+  Serial.println(text);
+}
+
+static void blankConfig(Storage &c) {
+  memset(&c, 0, sizeof(c));
+  c.mqttPort = 1883;
+  c.channel = DEFAULT_CHANNEL;
+}
+
+static void processCfgCommand(const String &cmd) {
+  if (cmd == "PING") {
+    cfgReply(F("PONG"));
+  } else if (cmd == "GET") {
+    Storage blank;
+    blankConfig(blank);
+    const Storage &c = pendingActive ? pending : (configured ? cfg : blank);
+    char sid[8];
+    snprintf(sid, sizeof(sid), "%X", c.sensorId);
+    cfgReply(String(F("VAL configured=")) + (configured ? 1 : 0));
+    cfgReply(String(F("VAL wifi_ssid=")) + c.wifiSSID);
+    cfgReply(String(F("VAL wifi_pass=")) + (c.wifiPass[0] ? "<set>" : ""));
+    cfgReply(String(F("VAL mqtt_host=")) + c.mqttHost);
+    cfgReply(String(F("VAL mqtt_port=")) + c.mqttPort);
+    cfgReply(String(F("VAL mqtt_user=")) + c.mqttUser);
+    cfgReply(String(F("VAL mqtt_pass=")) + (c.mqttPass[0] ? "<set>" : ""));
+    cfgReply(String(F("VAL sensor_id=")) + sid);
+    cfgReply(String(F("VAL channel=")) + c.channel);
+    cfgReply(String(F("VAL ntp=")) + c.ntpServer);
+    cfgReply(String(F("VAL gmt=")) + gmtString(c));
+    cfgReply(F("END"));
+  } else if (cmd.startsWith("SET ")) {
+    int eq = cmd.indexOf('=');
+    if (eq < 0) { cfgReply(F("ERR SET needs key=value")); return; }
+    String key = cmd.substring(4, eq);
+    key.trim();
+    if (!pendingActive) {
+      if (configured) pending = cfg; else blankConfig(pending);
+      pendingActive = true;
+    }
+    const char *err = setField(pending, key, cmd.substring(eq + 1));
+    cfgReply(err ? String(F("ERR ")) + key + F(": ") + err : String(F("OK ")) + key);
+  } else if (cmd == "SAVE") {
+    if (!pendingActive) { cfgReply(F("ERR nothing to save")); return; }
+    if (!pending.wifiSSID[0] || !pending.mqttHost[0]) {
+      cfgReply(F("ERR wifi_ssid and mqtt_host are required"));
+      return;
+    }
+    cfg = pending;
+    saveConfig();
+    cfgReply(F("SAVED"));
+    Serial.flush();
+    delay(200);
+    ESP.restart();
+  } else if (cmd == "CANCEL") {
+    pendingActive = false;
+    cfgReply(F("OK cancelled"));
+  } else {
+    cfgReply(F("ERR unknown command"));
+  }
+}
+
+// non-blocking line reader; lines without the "CFG " prefix are ignored
+void handleSerialConfig() {
+  static char line[192];
+  static size_t len = 0;
+  static bool overflow = false;
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\r') continue;
+    if (ch != '\n') {
+      if (len < sizeof(line) - 1) line[len++] = ch; else overflow = true;
+      continue;
+    }
+    line[len] = 0;
+    len = 0;
+    bool tooLong = overflow;
+    overflow = false;
+    if (strncmp(line, "CFG ", 4) != 0) continue;
+    if (tooLong) { cfgReply(F("ERR line too long")); continue; }
+    processCfgCommand(String(line + 4));
+  }
+}
+
+// ============================================================
 // Setup / Loop
 // ============================================================
 
@@ -729,6 +874,7 @@ void setup() {
 
 void loop() {
   yield();
+  handleSerialConfig();
   // LED off timer (non-blocking replacement for delay)
   if (ledOffTime && millis() >= ledOffTime) {
     digitalWrite(LED_PIN, HIGH);

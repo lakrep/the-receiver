@@ -2,3 +2,4 @@
 docs*
 .codemie*
 .DS_Store*
+.venv/
