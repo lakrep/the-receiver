@@ -31,7 +31,8 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 - `tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;`
 - `hum = d[4];`
 - No checksum verified yet.
-- Scanner iterates offsets & inversions, filters CH2, tracks ID + offset for lock-on.
+- Scanner iterates offsets & inversions, accepts only the configured channel (`cfg.channel`, default CH2), tracks ID + offset for lock-on.
+- **Channel filter:** `cfg.channel` (1..3, default `DEFAULT_CHANNEL` = 2) is chosen in the web form; packets of other channels are discarded. Invalid/unwritten EEPROM value (0xFF on old configs) → CH2.
 - **Hard sensor ID filter:** if `cfg.sensorId != 0`, only packets with `(id & ID_MASK) == cfg.sensorId` are accepted — all others are silently discarded.
   `ID_MASK = 0x1FC0`: top 3 bits of d[0] follow the humidity low bits (same sensor shows 1D99/3D99/…/FD99), d[1] low bits are flags.
   `sensorId` is masked on save and on load, so a legacy value like `9D99` behaves as `1D80`.
@@ -73,16 +74,16 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 
 ## Key Architecture
 - Single `.ino` file, EEPROM stores WiFi+MQTT+config in `Storage` struct (magic 0xDEAD)
-  - Fields: `magic`, `wifiSSID`, `wifiPass`, `mqttHost`, `mqttPort`, `mqttUser`, `mqttPass`, `sensorId`
+  - Fields: `magic`, `wifiSSID`, `wifiPass`, `mqttHost`, `mqttPort`, `mqttUser`, `mqttPass`, `sensorId`, `ntpServer`, `tzCustom`, `gmtOffsetMin`, `channel`
   - `sensorId` is `0` (auto) by default; when non-zero only packets matching that ID are accepted
 - First boot (or cleared EEPROM): AP mode "the-receiver" → http://192.168.4.1
-- Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto), NTP server, GMT offset (hours)
+- Config portal fields: WiFi SSID/Pass, MQTT Host/Port/User/Pass, Sensor ID (hex, 0 = auto), Sensor channel (CH1–CH3), NTP server, GMT offset (hours)
   - `Storage` also has `ntpServer[40]` (empty = `pl.pool.ntp.org`), `tzCustom`, `gmtOffsetMin`; unwritten/invalid values fall back to defaults on load
   - Empty/unparsable GMT offset → Warsaw time computed in code (`localOffsetSec()`: CEST UTC+2 between last Sunday of March and October 01:00 UTC, else CET UTC+1); a number → fixed offset, no DST. libc `TZ`/`localtime` is NOT used (DST was not applied on the target core). System clock stays UTC (`configTime(0, 0, server)`)
-- Startup order in `setup()`: WiFi → `syncTime()` (waits ≤15 s) → print `Sensor ID filter` → MQTT → `attachInterrupt` (RF polling)
+- Startup order in `setup()`: WiFi → `syncTime()` (waits ≤15 s) → print `Sensor channel filter` + `Sensor ID filter` → MQTT → `attachInterrupt` (RF polling)
 - NTP re-sync every 3 h via `sntp_update_delay_MS_rfc_not_less_than_15000()` override (`NTP_RESYNC_MS`); (weak lwIP hook)
-- Serial log shows `RF: CH2 id=0xXXXX (stable=0xYYYY)` — copy the **stable** value into the web form to lock the receiver to one sensor
-- Boot log prints `Sensor ID filter: 0x...` (or `off (auto)`) — check it to confirm the saved value
+- Serial log shows `RF: CH<n> id=0xXXXX (stable=0xYYYY)` — copy the **stable** value into the web form to lock the receiver to one sensor
+- Boot log prints `Sensor channel filter: CH2` and `Sensor ID filter: 0x...` (or `off (auto)`) — check it to confirm the saved value
 - WiFi reconnect: 10s interval, 10 failures → fallback to AP
 - Publish interval: 120s, stale timeout: 600s
 - RF decode runs in interrupt, non-blocking LED timer replaces `delay()`

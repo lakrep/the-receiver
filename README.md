@@ -107,7 +107,7 @@ hum     = d[4];                                       // byte 4 only
 
 **Scanner behaviour:**
 - Iterates all bit offsets and both inversions (inv=0, inv=1)
-- Filters for CH2 only; accepts temperature -30…60 °C and humidity ≤ 100 %
+- Accepts only the configured channel (CH1–CH3, default CH2); accepts temperature -30…60 °C and humidity ≤ 100 %
 - Uses 12-bit temperature formula (no alternative)
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
@@ -146,7 +146,7 @@ hum     = d[4];                                       // byte 4 only
    - Anything else → invalid
 
 3. **40-bit scan** — every possible offset and inversion is tested. Candidates
-   are validated by channel (must be CH2), tail nibble `0xF`, `d[0]>>5 == d[4]&7`, the
+   are validated by channel (must match the configured channel), tail nibble `0xF`, `d[0]>>5 == d[4]&7`, the
    sensor ID filter (if set), temperature range (-30…60 °C) and humidity (≤ 100 %).
 
 4. **Best-match** — among all candidates, the one with temperature closest
@@ -188,6 +188,8 @@ On first boot (or after EEPROM reset) the ESP starts an access point:
 4. Optionally, set **Sensor ID** (hex) to lock the receiver to a specific
    sensor — use the `stable=0xXXXX` value from the serial log line `RF: CH2 id=0x... (stable=0x...)`.
    The active filter is printed at boot as `Sensor ID filter: 0x...`. Leave `0` for auto.
+   Also pick the **Sensor channel** (CH1–CH3, default CH2); packets from other channels
+   are ignored. It is printed at boot as `Sensor channel filter: CH2`.
 5. Optionally, set the **NTP server** (empty = `pl.pool.ntp.org`) and the **GMT offset** in hours
    (e.g. `1`, `-5`, `5.5`; empty = Warsaw time, CET/CEST with automatic daylight saving).
    A fixed GMT offset has no daylight saving.

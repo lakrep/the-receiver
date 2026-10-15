@@ -58,6 +58,7 @@
 // ============================================================
 #define EEPROM_SIZE   512
 #define CFG_MAGIC     0xDEAD
+#define DEFAULT_CHANNEL 2
 
 struct Storage {
   uint16_t magic;
@@ -71,6 +72,7 @@ struct Storage {
   char ntpServer[40];     // empty = NTP_DEFAULT_SERVER
   uint8_t tzCustom;       // 1 = use gmtOffsetMin, otherwise Warsaw (CET/CEST, EU DST rules)
   int16_t gmtOffsetMin;   // minutes east of UTC, valid only when tzCustom == 1
+  uint8_t channel;        // sensor channel 1..3 to accept (anything else = DEFAULT_CHANNEL)
 };
 
 // ============================================================
@@ -151,6 +153,7 @@ void loadConfig() {
     cfg.tzCustom = 0;
     cfg.gmtOffsetMin = 0;
   }
+  if (cfg.channel < 1 || cfg.channel > 3) cfg.channel = DEFAULT_CHANNEL;
 }
 
 void saveConfig() {
@@ -373,6 +376,16 @@ void handleRoot() {
   page += sid;
   page += F(" placeholder='e.g. 1D80'>"
     "<small>Use the stable= value from the serial log. Only bits 0x1FC0 are compared.</small>"
+    "<label>Sensor channel</label><select name=ch style='width:100%;padding:8px;margin:6px 0'>");
+  for (int c = 1; c <= 3; c++) {
+    page += F("<option value=");
+    page += c;
+    if (c == cfg.channel) page += F(" selected");
+    page += F(">CH");
+    page += c;
+    page += F("</option>");
+  }
+  page += F("</select>"
     "<label>NTP server (empty = " NTP_DEFAULT_SERVER ")</label><input name=ntp value='");
   page += cfg.ntpServer;
   page += F("' placeholder='" NTP_DEFAULT_SERVER "'>"
@@ -393,6 +406,8 @@ void handleSave() {
   strlcpy(cfg.mqttUser, http.arg("mu").c_str(), sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPass, http.arg("mpw").c_str(), sizeof(cfg.mqttPass));
   cfg.sensorId = (uint16_t)strtol(http.arg("sid").c_str(), NULL, 16) & ID_MASK;
+  cfg.channel = (uint8_t)http.arg("ch").toInt();
+  if (cfg.channel < 1 || cfg.channel > 3) cfg.channel = DEFAULT_CHANNEL;
 
   String ntp = http.arg("ntp");
   ntp.trim();
@@ -487,7 +502,7 @@ void decodeRF() {
 
   if (bitCount < PACKET_BITS) return;
 
-  // --- 40-bit scan — pick best CH2 packet matching our sensor ID ---
+  // --- 40-bit scan — pick best packet on the configured channel matching our sensor ID ---
   int bestOff = -1;
   uint8_t bestD[PACKET_BYTES];
   float bestTemp = 0;
@@ -508,7 +523,7 @@ void decodeRF() {
         d[b / 8] = (d[b / 8] << 1) | ((bits[off + b] & 1) ^ inv);
       if (d[0] == 0xFF && d[1] == 0xFF) continue;
       uint8_t channel = ((d[1] >> 4) & 3) + 1;
-      if (channel != 2) continue;
+      if (channel != cfg.channel) continue;
       uint16_t id = ((uint16_t)d[0] << 8) | d[1];
 
       // d[3] low nibble was 0xF in all 1778 good packets of a 41 h capture, never in corrupted tails
@@ -563,7 +578,9 @@ void decodeRF() {
   uint16_t bestId = ((uint16_t)bestD[0] << 8) | bestD[1];
 
   printTimestamp();
-  SERIAL_PRINT(print(F("RF: CH2 id=0x")));
+  SERIAL_PRINT(print(F("RF: CH")));
+  SERIAL_PRINT(print(cfg.channel));
+  SERIAL_PRINT(print(F(" id=0x")));
   SERIAL_PRINT(print(bestId, HEX));
   SERIAL_PRINT(print(F(" (stable=0x")));
   SERIAL_PRINT(print(bestId & ID_MASK, HEX));
@@ -681,6 +698,10 @@ void setup() {
     connectWiFi();
     if (WiFi.status() == WL_CONNECTED) syncTime();
   }
+
+  printTimestamp();
+  SERIAL_PRINT(print(F("Sensor channel filter: CH")));
+  SERIAL_PRINT(println(cfg.channel));
 
   printTimestamp();
   if (cfg.sensorId) {
