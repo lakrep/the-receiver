@@ -2,7 +2,7 @@
   the-receiver — Geevon TX19 433MHz decoder with WiFi + MQTT + Home Assistant
   Board: NodeMCU D1 Mini (ESP-12F)
 
-  40-bit (5 byte), temperature 12-bit (d[2]<<4 | d[3]>>4) * 0.1, humidity d[4],
+  40-bit (5 byte), temperature 12-bit signed (two's complement, 0.1 °C), humidity d[4],
   channel ((d[1]>>4) & 3) + 1 (bits 5-4 of d[1], as in rtl_433 TX19-1), battery unconfirmed.
 
   First boot: AP mode "the-receiver" → http://192.168.4.1 → configure WiFi + MQTT + NTP
@@ -109,6 +109,7 @@ unsigned long lastPacket = 0;
 unsigned long configStart = 0;
 
 float lastTempC = 0;
+bool lastTempValid = false;   // lastTempC is meaningful (0.0 °C is a valid reading)
 uint8_t lastHum = 0;
 bool hasData = false;
 bool batteryLow = false;
@@ -603,15 +604,19 @@ void decodeRF() {
       // hard sensor ID filter (ID_MASK drops the drifting top bits and channel/battery flags)
       if (cfg.sensorId != 0 && (id & ID_MASK) != cfg.sensorId) continue;
 
-      // temp from 12-bit formula only
-      float tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;
+      // temp from 12-bit formula: signed two's complement, tenths of a degree
+      // (an unsigned read makes every negative value look like +409.6 °C and the
+      // -30..60 °C range check below discards all packets below 0 °C)
+      int tempRaw = ((int)d[2] << 4) | (d[3] >> 4);
+      if (tempRaw & 0x800) tempRaw -= 0x1000;
+      float tempC = tempRaw * 0.1f;
       if (tempC < -30 || tempC > 60) continue;
 
       // humidity: byte 4 only
       uint8_t hum = d[4];
       if (hum > 100) continue;
 
-      int delta = abs((int)(tempC * 10) - 290);
+      int delta = abs(tempRaw - 290);
       if (lastGoodId && (id & ID_MASK) == (lastGoodId & ID_MASK)) delta -= 30;
       if (lastGoodOff >= 0 && off == lastGoodOff) delta -= 20;
       if (hum > 30) delta += 20;
@@ -637,7 +642,7 @@ void decodeRF() {
   if (bestIdOff >= 0) {
     bestOff = bestIdOff; memcpy(bestD, bestIdD, PACKET_BYTES);
     bestTemp = bestIdTemp; bestHum = bestIdHum;
-  } else if (lastTempC != 0.0f && bestOff >= 0) {
+  } else if (lastTempValid && bestOff >= 0) {
     float maxDiff = hasData ? 5.0f : 10.0f;
     if (bestTemp > lastTempC + maxDiff || bestTemp < lastTempC - maxDiff)
       return; // skip — no consistent packet found
@@ -696,6 +701,7 @@ void decodeRF() {
   lastGoodOff = bestOff;
   lastGoodId = bestId;
   lastTempC = bestTemp;
+  lastTempValid = true;
   lastHum = bestHum;
   lastPacket = millis();
   hasData = true;

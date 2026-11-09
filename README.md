@@ -73,7 +73,7 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 | Bit 7       | d[1] >> 7      | 1    | Battery flag. Always 1 in all captured packets. Firmware assumes **0 = battery low** (in rtl_433 TX19-1 this bit is the battery bit with the opposite polarity, 1 = low, which would mean "always low" here); the assumption is unverified until a battery runs down |
 | Bit 6       | d[1] >> 6 & 1  | 1    | Always 0 in all captured packets |
 | Flags       | d[1] & 0x0F    | 4    | Observed `0x9` in 99.9 % of packets, `0x1` in 2 of 1796; meaning unknown, the decoder ignores it |
-| Temperature | d[2]..d[3]     | 12   | `(d[2]<<4 \| d[3]>>4) × 0.1 °C` |
+| Temperature | d[2]..d[3]     | 12   | Signed two's complement: `raw = (d[2]<<4 \| d[3]>>4); if (raw & 0x800) raw -= 0x1000;` then `raw × 0.1 °C` (also below 0 °C) |
 | Constant    | d[3] & 0x0F    | 4    | Always `0xF` in good packets (used as a tail check) |
 | Humidity    | d[4]           | 8    | Relative humidity %        |
 
@@ -101,14 +101,16 @@ reception) and keeps corrupted humidity values out of MQTT. Example caught by it
 **Decoding:**
 ```c
 channel = ((d[1] >> 4) & 3) + 1;                 // CH1/CH2/CH3
-tempC   = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;  // 12-bit, NO -500 offset
-hum     = d[4];                                       // byte 4 only
+tempRaw = (((int)d[2] << 4) | (d[3] >> 4));      // 12-bit, NO -500 offset
+if (tempRaw & 0x800) tempRaw -= 0x1000;          // signed two's complement
+tempC   = tempRaw * 0.1f;
+hum     = d[4];                                   // byte 4 only
 ```
 
 **Scanner behaviour:**
 - Iterates all bit offsets and both inversions (inv=0, inv=1)
 - Accepts only the configured channel (CH1–CH3, default CH2); accepts temperature -30…60 °C and humidity ≤ 100 %
-- Uses 12-bit temperature formula (no alternative)
+- Uses the signed 12-bit temperature formula (two's complement, no alternative)
 - Tracks the sensor ID (`lastGoodId`) and offset (`lastGoodOff`) to stay locked
   on the correct packet across transmissions
 - **Hard sensor ID filter:** if `sensorId` is configured (non-zero in EEPROM),
@@ -125,6 +127,10 @@ hum     = d[4];                                       // byte 4 only
 
 **Temperature formula confirmed:**
 - Raw 12-bit = `(d[2] << 4) | (d[3] >> 4)` (e.g. `0x118` = 280 → 28.0 °C)
+- Signed two's complement: values with bit 11 set are negative (`0xFEC` = −20 → −2.0 °C,
+  observed as `raw:BD 99 FE CF 45`). Reading the field as unsigned makes every reading
+  below 0 °C look like ≈+410 °C, which the −30…60 °C range check then discards — this was
+  the "no data below zero" bug.
 - NO -500 offset (TX19-1 uses offset, this device does not)
 
 **Humidity confirmed:** `d[4]` only (not split across d[3]/d[4]).

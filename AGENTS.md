@@ -23,12 +23,12 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
 - **Byte 0:** bits 7-5 = copy of humidity low 3 bits (`d[0]>>5 == d[4]&7`, 97.2 % of 1872 packets; NOT part of the ID — corrupted packets break it; **enforced**, mismatch → packet discarded); bits 4-0 = ID (0x1D)
 - **Byte 1:** bits 5-4 = channel-1 (0=CH1, 1=CH2, 2=CH3, as in rtl_433 TX19-1); bit 7 = battery flag, assumed 0 = LOW (always 1 in captures, never seen low; rtl_433 TX19-1 has the opposite polarity), bit 6 always 0; low nibble = flags (observed 0x9, rarely 0x1)
 - **Byte 3 low nibble:** always 0xF (tail check)
-- **Byte 2-3:** Temperature 12-bit — `((d[2]<<4 | d[3]>>4)) * 0.1°C` (NO -500 offset)
+- **Byte 2-3:** Temperature 12-bit signed — two's complement, `raw = (d[2]<<4 | d[3]>>4); if (raw & 0x800) raw -= 0x1000; tempC = raw * 0.1` (NO -500 offset; negatives confirmed: `FE CF` = 0xFEC = -20 → -2.0 °C)
 - **Byte 4:** Humidity %
 
 ### Decoding
 - `channel = ((d[1] >> 4) & 3) + 1;`
-- `tempC = (((int)d[2] << 4) | (d[3] >> 4)) * 0.1f;`
+- `tempRaw = (((int)d[2] << 4) | (d[3] >> 4)); if (tempRaw & 0x800) tempRaw -= 0x1000; tempC = tempRaw * 0.1f;`
 - `hum = d[4];`
 - No checksum verified yet.
 - Scanner iterates offsets & inversions, accepts only the configured channel (`cfg.channel`, default CH2), tracks ID + offset for lock-on.
@@ -49,8 +49,9 @@ hhhIIIII  CCCCffff  TTTTTTTT  TTTT1111  HHHHHHHH
   20%. Our decoder reports the real d[4] value.
 - **Neighbor CH2 rejection:** Another sensor on CH2 (23°C, 51% hum) is in range.
   Scanner uses `if (hum > 30) delta += 20` to bias against high-humidity candidates.
-  Temperature consistency (±5°C fresh, ±10°C stale) uses `lastTempC != 0` instead
-  of `hasData`, persisting across stale timeouts to prevent wrong-sensor capture.
+  Temperature consistency (±5°C fresh, ±10°C stale) uses `lastTempValid` instead
+  of `hasData`, persisting across stale timeouts to prevent wrong-sensor capture
+  (a `lastTempC != 0` test would wrongly drop the consistency check at exactly 0.0 °C).
 
 ## RF Protocol (Geevon TX19-1 with LCD — reference only, NOT used)
 - 72-bit (9 byte), bits inverted, LFSR-8 checksum. See `rtl_433/src/devices/geevon_tx19.c`.
